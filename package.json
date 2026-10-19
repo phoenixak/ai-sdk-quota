@@ -1,0 +1,77 @@
+{
+  "name": "ai-sdk-quota",
+  "version": "0.0.0",
+  "description": "Quota-aware model pool for the Vercel AI SDK: route each call to a model that still has headroom, before you hit a 429.",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "files": [
+    "dist"
+  ],
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./limits": {
+      "import": {
+        "types": "./dist/limits/index.d.ts",
+        "default": "./dist/limits/index.js"
+      },
+      "require": {
+        "types": "./dist/limits/index.d.cts",
+        "default": "./dist/limits/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "keywords": [
+    "ai",
+    "ai-sdk",
+    "vercel",
+    "rate-limit",
+    "quota",
+    "fallback",
+    "llm",
+    "free-tier"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "coverage": "vitest run --coverage",
+    "lint:pkg": "publint && attw --pack .",
+    "check:terms": "sh scripts/check-private-terms.sh"
+  },
+  "peerDependencies": {
+    "@ai-sdk/provider": "^4.0.0"
+  },
+  "devDependencies": {
+    "@ai-sdk/provider": "^4.0.29",
+    "@arethetypeswrong/cli": "^0.18.5",
+    "@types/node": "^26.6.5",
+    "@vitest/coverage-v8": "^5.0.5",
+    "ai": "^7.0.143",
+    "fast-check": "^4.10.2",
+    "publint": "^0.3.25",
+    "tsup": "^9.0.0",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5",
+    "zod": "^4.6.7"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true
+  }
+}
