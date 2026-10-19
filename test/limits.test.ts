@@ -25,7 +25,7 @@ describe('limits registry', () => {
 
   it('marks unverified tiers and carries their daily reset', () => {
     expect(resolveLimits('gemini:free', 'gemini-3.5-flash-lite')).toEqual({
-      limits: { dailyReset: { timeZone: 'America/Los_Angeles' }, rpm: 5, rpd: 100, tpm: 250000 },
+      limits: { dailyReset: { timeZone: 'America/Los_Angeles' }, rpm: 15, rpd: 120, tpm: 250000 },
       groups: [],
       verified: false,
     });

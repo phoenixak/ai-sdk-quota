@@ -35,6 +35,11 @@ export interface ProviderTruth {
   remaining: number;
   limit?: number;
   resetInMs: number;
+  /**
+   * The provider rejected a call because this window is full. Instead of holding the
+   * reading until `resetInMs`, assume the provider's usage drains evenly until then.
+   */
+  drain?: boolean;
 }
 
 export interface HeaderReading {
@@ -43,6 +48,8 @@ export interface HeaderReading {
   retryAfterMs?: number;
   /** The provider said a daily quota is used up. */
   dailyExhausted?: boolean;
+  /** Windows the provider named in a 429 ("on requests per minute (RPM)", a per-day quota, ...). */
+  limited?: Dimension[];
 }
 
 export interface HeaderInput {
@@ -65,7 +72,9 @@ export type PoolEvent =
   | { type: 'exhausted'; retryAfterMs: number | undefined }
   | { type: 'reconcile'; memberId: string; estimatedTokens: number; actualTokens: number | undefined }
   /** Recording a finished stream's usage failed; nothing else can surface it. */
-  | { type: 'store-error'; memberId: string; error: unknown };
+  | { type: 'store-error'; memberId: string; error: unknown }
+  /** A named 429 lowered a member's effective limit for one window (see `adaptive`). */
+  | { type: 'adapt'; memberId: string; dim: Dimension; factor: number };
 
 export interface PoolMember {
   /** Stable id used for store keys, events and stickiness. */

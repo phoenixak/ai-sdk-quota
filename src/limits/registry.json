@@ -4,7 +4,7 @@
       "source": "https://console.groq.com/docs/rate-limits",
       "verifiedAt": "2026-10-19",
       "verified": true,
-      "note": "Free plan, per organization. Cached tokens don't count.",
+      "note": "Free plan, per organization. Cached tokens don't count. One free account sustained only ~20 RPM on openai/gpt-oss-20b on 2026-10-19 (adaptive limits handle this).",
       "models": {
         "openai/gpt-oss-120b": { "rpm": 30, "rpd": 1000, "tpm": 8000, "tpd": 200000 },
         "openai/gpt-oss-20b": { "rpm": 30, "rpd": 1000, "tpm": 8000, "tpd": 200000 },
@@ -37,9 +37,9 @@
       "source": "https://ai.google.dev/gemini-api/docs/rate-limits",
       "verifiedAt": "2026-10-19",
       "verified": false,
-      "note": "Google publishes no numbers; real limits are shown per project in AI Studio. These are conservative defaults. Limits are per project, not per key. RPD resets at midnight Pacific.",
+      "note": "Google publishes no numbers; real limits are shown per project in AI Studio. Limits are per project, not per key. RPD resets at midnight Pacific. Defaults from one free project on 2026-10-19: gemini-3.5-flash-lite accepted 22 requests in one minute and over 120 in a day without a daily 429; set your own from AI Studio.",
       "dailyReset": { "timeZone": "America/Los_Angeles" },
-      "defaultModel": { "rpm": 5, "rpd": 100, "tpm": 250000 }
+      "defaultModel": { "rpm": 15, "rpd": 120, "tpm": 250000 }
     },
     "mistral:free": {
       "source": "https://docs.mistral.ai/admin/billing-usage/usage-limits",

@@ -1,4 +1,4 @@
-import type { HeaderAdapter, HeaderInput, HeaderReading, PoolMember, ProviderTruth } from './types.js';
+import type { Dimension, HeaderAdapter, HeaderInput, HeaderReading, PoolMember, ProviderTruth } from './types.js';
 
 const UNITS: Record<string, number> = { h: 3_600_000, m: 60_000, s: 1_000, ms: 1, us: 0.001, µs: 0.001, ns: 0.000001 };
 
@@ -59,12 +59,31 @@ function withRetryAfter(reading: HeaderReading, input: HeaderInput, now: number)
   return retryAfterMs === undefined ? reading : { ...reading, retryAfterMs };
 }
 
+const NAMED_WINDOW = /\((RPS|RPM|RPD|TPM|TPD)\)/gi;
+
+/**
+ * Windows named in an OpenAI-style 429 message, e.g. Groq's "Rate limit reached for
+ * model ... on requests per minute (RPM): Limit 30, Used 30, Requested 1".
+ */
+export function namedWindows(body: string | undefined): Dimension[] {
+  if (!body) return [];
+  return [...new Set([...body.matchAll(NAMED_WINDOW)].map((m) => m[1]!.toLowerCase() as Dimension))];
+}
+
+function withLimited(reading: HeaderReading, input: HeaderInput): HeaderReading {
+  const limited = input.status === 429 ? namedWindows(input.body) : [];
+  return limited.length ? { ...reading, limited } : reading;
+}
+
 /** Groq: the `requests` headers describe the daily limit, the `tokens` headers the per-minute limit. */
 export const groqHeaders: HeaderAdapter = (input, now) =>
-  withRetryAfter(
-    { truths: [...truth(input, 'rpd', 'requests', 86_400_000), ...truth(input, 'tpm', 'tokens', 60_000)] },
+  withLimited(
+    withRetryAfter(
+      { truths: [...truth(input, 'rpd', 'requests', 86_400_000), ...truth(input, 'tpm', 'tokens', 60_000)] },
+      input,
+      now,
+    ),
     input,
-    now,
   );
 
 /** OpenAI-style headers: `requests` and `tokens` both describe per-minute limits. */
@@ -75,7 +94,7 @@ export const openaiHeaders: HeaderAdapter = (input, now) => {
     now,
   );
   const ms = num(header(input, 'retry-after-ms'));
-  return ms === undefined ? reading : { ...reading, retryAfterMs: ms };
+  return withLimited(ms === undefined ? reading : { ...reading, retryAfterMs: ms }, input);
 };
 
 /**
@@ -98,6 +117,7 @@ export const geminiHeaders: HeaderAdapter = (input, now) => {
   if (!input.body) return reading;
   let retryAfterMs = reading.retryAfterMs;
   let dailyExhausted = false;
+  const limited = new Set<Dimension>();
   try {
     const parsed: unknown = JSON.parse(input.body);
     const error = (Array.isArray(parsed) ? parsed[0] : parsed) as { error?: { details?: unknown[] } } | undefined;
@@ -105,7 +125,16 @@ export const geminiHeaders: HeaderAdapter = (input, now) => {
       const d = detail as { '@type'?: string; retryDelay?: string; violations?: { quotaId?: string }[] };
       if (d['@type']?.endsWith('google.rpc.RetryInfo')) retryAfterMs ??= parseDuration(d.retryDelay);
       if (d['@type']?.endsWith('google.rpc.QuotaFailure')) {
-        dailyExhausted ||= (d.violations ?? []).some((v) => /PerDay/i.test(v.quotaId ?? ''));
+        for (const v of d.violations ?? []) {
+          const id = v.quotaId ?? '';
+          const tokens = /Token/i.test(id);
+          if (/PerDay/i.test(id)) {
+            dailyExhausted = true;
+            limited.add(tokens ? 'tpd' : 'rpd');
+          } else if (/PerMinute/i.test(id)) {
+            limited.add(tokens ? 'tpm' : 'rpm');
+          }
+        }
       }
     }
   } catch {
@@ -119,6 +148,7 @@ export const geminiHeaders: HeaderAdapter = (input, now) => {
     truths: [],
     ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
     ...(dailyExhausted ? { dailyExhausted } : {}),
+    ...(limited.size ? { limited: [...limited] } : {}),
   };
 };
 

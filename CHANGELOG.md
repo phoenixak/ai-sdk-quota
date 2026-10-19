@@ -13,3 +13,4 @@ First release, for AI SDK 7 (`LanguageModelV4`).
 - `npx ai-sdk-quota probe` reads your real limits from a provider.
 - Strips other providers' data from the history when a conversation moves between providers; `stickyKey` keeps a conversation on one member.
 - `result.providerMetadata.aiSdkQuota` says which member answered.
+- Learns from 429s that name their window (Groq, OpenAI-style, Gemini quota ids): the window counts as full and drains over its length, so the pool resumes one call at a time instead of in a burst; `adaptive` lowers that member's effective limit and recovers it over 5 minutes; `safetyMargin` keeps a fixed share of every provider limit in reserve. Short windows count 1 s of timing slack.

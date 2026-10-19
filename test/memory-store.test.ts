@@ -11,10 +11,10 @@ describe('memoryStore internals', () => {
     const limits = { tpm: 1_000 };
     const r = await store.reserve([{ key: 'm', limits, requests: 1, tokens: 500 }], { now: 0, ttlMs: 600_000 });
     if (!r.ok) throw new Error('blocked');
-    // A minute later the bucket is pruned by usage(); the late commit must not resurrect it.
-    expect((await store.usage('m', limits, 61_000)).tpm?.used).toBe(0);
-    await store.commit(r.reservation, 900, 61_000);
-    expect((await store.usage('m', limits, 61_000)).tpm?.used).toBe(0);
+    // Once the window (plus slack) has passed, usage() prunes the bucket; the late commit must not resurrect it.
+    expect((await store.usage('m', limits, 62_000)).tpm?.used).toBe(0);
+    await store.commit(r.reservation, 900, 62_000);
+    expect((await store.usage('m', limits, 62_000)).tpm?.used).toBe(0);
   });
 
   it('ignores placements for unknown series', async () => {
@@ -40,7 +40,7 @@ describe('memoryStore internals', () => {
     const r = await store.reserve([{ key: 'm', limits, requests: 1, tokens: 300 }], { now: 0, ttlMs: 10 });
     if (!r.ok) throw new Error('blocked');
     await store.commit(r.reservation, 120, 5_000);
-    expect((await store.usage('m', limits, 5_000)).tpm).toEqual({ used: 120, limit: 1_000, remaining: 880, resetInMs: 61_000 });
+    expect((await store.usage('m', limits, 5_000)).tpm).toEqual({ used: 120, limit: 1_000, remaining: 880, resetInMs: 62_000 });
   });
 });
 

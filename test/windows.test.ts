@@ -16,9 +16,9 @@ const H = 3_600_000;
 
 describe('windowSpec', () => {
   it('maps dimensions to windows', () => {
-    expect(windowSpec('rps')).toEqual({ kind: 'rolling', windowMs: 1_000, bucketMs: 100 });
-    expect(windowSpec('rpm')).toEqual({ kind: 'rolling', windowMs: 60_000, bucketMs: 1_000 });
-    expect(windowSpec('tpm')).toEqual({ kind: 'rolling', windowMs: 60_000, bucketMs: 1_000 });
+    expect(windowSpec('rps')).toEqual({ kind: 'rolling', windowMs: 1_100, bucketMs: 100 });
+    expect(windowSpec('rpm')).toEqual({ kind: 'rolling', windowMs: 61_000, bucketMs: 1_000 });
+    expect(windowSpec('tpm')).toEqual({ kind: 'rolling', windowMs: 61_000, bucketMs: 1_000 });
     expect(windowSpec('rpd')).toEqual({ kind: 'rolling', windowMs: 24 * H, bucketMs: 15 * 60_000 });
     expect(windowSpec('tpd', { timeZone: 'UTC' })).toEqual({ kind: 'calendar', timeZone: 'UTC' });
   });
@@ -35,15 +35,17 @@ describe('rolling windows', () => {
 
   it('buckets by second and counts every bucket that may still hold a call from the last 60s', () => {
     expect(bucketStart(spec, 61_500)).toBe(61_000);
-    expect(windowStart(spec, 61_500)).toBe(1_000);
+    // 60s window + 1s timing slack.
+    expect(windowStart(spec, 61_500)).toBe(0);
     const buckets: [number, number][] = [
       [1_000, 5],
       [2_000, 3],
       [61_000, 1],
     ];
-    // A call at 1.999s is still inside (1.5s, 61.5s], so the 1s bucket counts.
+    // A call at 1.999s is still inside the window (plus slack), so the 1s bucket counts.
     expect(windowSum(buckets, spec, 61_500)).toBe(9);
-    expect(windowSum(buckets, spec, 62_000)).toBe(4);
+    expect(windowSum(buckets, spec, 62_999)).toBe(9);
+    expect(windowSum(buckets, spec, 63_000)).toBe(4);
   });
 
   it('computes retry-after from the oldest buckets', () => {
@@ -52,10 +54,10 @@ describe('rolling windows', () => {
       [20_000, 3],
     ];
     expect(retryAfterMs(buckets, spec, 30_000, 1, 10)).toBe(0);
-    // limit 5, used 5: need 1 frees when the 10s bucket's last possible call (10.999s) ages out at 71s.
-    expect(retryAfterMs(buckets, spec, 30_000, 1, 5)).toBe(41_000);
-    // need 4 needs both buckets gone: the 20s bucket stops counting at 81s.
-    expect(retryAfterMs(buckets, spec, 30_000, 4, 5)).toBe(51_000);
+    // limit 5, used 5: need 1 frees when the 10s bucket's last possible call (10.999s) ages out: 71s + 1s slack.
+    expect(retryAfterMs(buckets, spec, 30_000, 1, 5)).toBe(42_000);
+    // need 4 needs both buckets gone: the 20s bucket stops counting at 82s.
+    expect(retryAfterMs(buckets, spec, 30_000, 4, 5)).toBe(52_000);
     expect(retryAfterMs(buckets, spec, 30_000, 6, 5)).toBe(Infinity);
   });
 
@@ -71,7 +73,7 @@ describe('rolling windows', () => {
         spec,
         35_000,
       ),
-    ).toBe(36_000);
+    ).toBe(37_000);
   });
 });
 

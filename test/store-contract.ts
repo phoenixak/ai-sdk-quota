@@ -33,11 +33,12 @@ export function describeStoreContract(
       expect(r.ok).toBe(false);
       if (!r.ok) {
         expect(r.blocked).toEqual({ key: 'm:a', dim: 'rpm' });
-        // Each bucket counts as if its calls came at its end, so capacity frees up to 1s late, never early.
-        expect(r.retryAfterMs).toBe(60_000);
+        // Each bucket counts as if its calls came at its end, plus 1s timing slack:
+        // capacity frees up to 2s late, never early.
+        expect(r.retryAfterMs).toBe(61_000);
       }
-      expect((await store.reserve([charge('m:a', limits)], { now: T0 + 60_999, ttlMs: TTL })).ok).toBe(false);
-      await reserveOk(store, [charge('m:a', limits)], T0 + 61_000);
+      expect((await store.reserve([charge('m:a', limits)], { now: T0 + 61_999, ttlMs: TTL })).ok).toBe(false);
+      await reserveOk(store, [charge('m:a', limits)], T0 + 62_000);
     });
 
     it('never lets a call expire early across a bucket edge (found by the property test)', async () => {
@@ -45,8 +46,8 @@ export function describeStoreContract(
       const limits = { rpm: 1 };
       await reserveOk(store, [charge('m:a', limits)], T0 + 17_642);
       // 59.358s later the first call is still inside the provider's 60s window.
-      expect((await store.reserve([charge('m:a', limits)], { now: T0 + 77_000, ttlMs: TTL })).ok).toBe(false);
-      await reserveOk(store, [charge('m:a', limits)], T0 + 78_000);
+      expect((await store.reserve([charge('m:a', limits)], { now: T0 + 78_999, ttlMs: TTL })).ok).toBe(false);
+      await reserveOk(store, [charge('m:a', limits)], T0 + 79_000);
     });
 
     it('is all-or-nothing across keys', async () => {
@@ -176,6 +177,44 @@ export function describeStoreContract(
       expect((await store.usage('m:a', { rpm: 5 }, T0 + 4_000)).rpm?.used).toBe(0);
     });
 
+    it('a named 429 drains: after the first slot frees, exactly one call fits, not a burst', async () => {
+      const store = await makeStore();
+      const limits = { rpm: 30 };
+      await store.applyProviderTruth('m:a', limits, [{ dim: 'rpm', remaining: 0, resetInMs: 61_000, drain: true }], T0);
+      const first = await store.reserve([charge('m:a', limits)], { now: T0, ttlMs: TTL });
+      expect(first.ok).toBe(false);
+      if (!first.ok) expect(first.retryAfterMs).toBe(2_034);
+      await reserveOk(store, [charge('m:a', limits)], T0 + 2_034);
+      // The call just reserved counts on top of the drained reading.
+      const second = await store.reserve([charge('m:a', limits)], { now: T0 + 2_034, ttlMs: TTL });
+      expect(second.ok).toBe(false);
+      if (!second.ok) expect(second.retryAfterMs).toBe(2_033);
+      expect((await store.usage('m:a', limits, T0 + 2_034)).rpm?.used).toBe(30);
+      // Halfway through the window about half the slots are back.
+      const results = [];
+      for (let i = 0; i < 20; i++) results.push(await store.reserve([charge('m:a', limits)], { now: T0 + 30_500, ttlMs: TTL }));
+      expect(results.filter((r) => r.ok)).toHaveLength(14);
+    });
+
+    it('measures a reading against the provider limit it reports', async () => {
+      const store = await makeStore();
+      // The pool enforces 900 of the provider's 1,000 (safetyMargin 0.9).
+      const limits = { rpd: 900 };
+      await store.applyProviderTruth('m:a', limits, [{ dim: 'rpd', remaining: 970, limit: 1_000, resetInMs: 60_000 }], T0);
+      expect((await store.usage('m:a', limits, T0)).rpd?.used).toBe(30);
+    });
+
+    it('a real header reading replaces a draining estimate', async () => {
+      const store = await makeStore();
+      const limits = { tpm: 8_000 };
+      await store.applyProviderTruth('m:a', limits, [{ dim: 'tpm', remaining: 0, resetInMs: 61_000, drain: true }], T0);
+      await store.applyProviderTruth('m:a', limits, [{ dim: 'tpm', remaining: 7_000, resetInMs: 5_000 }], T0 + 1_000);
+      expect((await store.usage('m:a', limits, T0 + 1_000)).tpm?.used).toBe(1_000);
+      // And a draining estimate doesn't replace a real reading it doesn't exceed.
+      await store.applyProviderTruth('m:a', limits, [{ dim: 'tpm', remaining: 7_500, resetInMs: 61_000, drain: true }], T0 + 2_000);
+      expect((await store.usage('m:a', limits, T0 + 2_000)).tpm?.used).toBe(1_000);
+    });
+
     it('a charge that can never fit is refused even under a provider floor', async () => {
       const store = await makeStore();
       const limits = { tpm: 100 };
@@ -190,7 +229,7 @@ export function describeStoreContract(
       const limits = { rpm: 3, rpd: 10, dailyReset: { timeZone: 'UTC' } } as const;
       await reserveOk(store, [charge('m:a', limits)]);
       const u = await store.usage('m:a', limits, T0 + 30_000);
-      expect(u.rpm).toEqual({ used: 1, limit: 3, remaining: 2, resetInMs: 31_000 });
+      expect(u.rpm).toEqual({ used: 1, limit: 3, remaining: 2, resetInMs: 32_000 });
       expect(u.rpd).toEqual({ used: 1, limit: 10, remaining: 9, resetInMs: 12 * 3_600_000 - 30_000 });
     });
 

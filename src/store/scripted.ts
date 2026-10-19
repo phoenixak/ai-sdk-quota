@@ -1,5 +1,6 @@
 import type { Dimension, Limits } from '../types.js';
 import { DIMENSIONS, bucketStart, isTokenDimension, nextResetMs, windowSpec, windowStart } from '../windows.js';
+import { floorAt } from './floor.js';
 import type { Placement, QuotaStore, Reservation, Usage } from './types.js';
 
 /**
@@ -37,6 +38,11 @@ export interface CommitPlacement {
 export interface SeriesUsage {
   floorUsed: number;
   floorUntil: number;
+  /** When the provider reading was taken. */
+  floorAt: number;
+  floorDrain: boolean;
+  /** Calls reserved since the reading. */
+  floorAdded: number;
   /** Buckets at or after `from`. */
   buckets: [number, number][];
 }
@@ -49,7 +55,7 @@ export interface StoreBackend {
   >;
   commit(args: { id: string; actual: number | undefined; placements: CommitPlacement[]; now: number }): Promise<void>;
   release(args: { id: string; now: number }): Promise<void>;
-  truth(args: { entries: { series: string; used: number; until: number }[]; now: number }): Promise<void>;
+  truth(args: { entries: { series: string; used: number; until: number; drain: boolean }[]; now: number }): Promise<void>;
   usage(args: { entries: { series: string; from: number }[]; now: number }): Promise<SeriesUsage[]>;
   setCooldown(memberId: string, until: number, ttlMs: number): Promise<void>;
   getCooldown(memberId: string): Promise<number | undefined>;
@@ -144,7 +150,14 @@ export function createScriptedStore(backend: StoreBackend): QuotaStore {
         const limit = limits[t.dim];
         return limit === undefined
           ? []
-          : [{ series: seriesName(key, t.dim), used: Math.max(0, limit - t.remaining), until: now + t.resetInMs }];
+          : [
+              {
+                series: seriesName(key, t.dim),
+                used: Math.max(0, (t.limit ?? limit) - t.remaining),
+                until: now + t.resetInMs,
+                drain: t.drain === true,
+              },
+            ];
       });
       if (entries.length) await backend.truth({ entries, now });
     },
@@ -161,8 +174,11 @@ export function createScriptedStore(backend: StoreBackend): QuotaStore {
         const limit = limits[dim]!;
         const r = results[i]!;
         const counted = r.buckets.reduce((sum, [, amount]) => sum + amount, 0);
-        const floor = r.floorUntil > now ? r.floorUsed : 0;
-        const used = Math.max(counted, floor);
+        const floor = floorAt(
+          { used: r.floorUsed, until: r.floorUntil, at: r.floorAt, drain: r.floorDrain, added: r.floorAdded },
+          now,
+        );
+        const used = Math.max(counted, Math.ceil(floor));
         const resetInMs = floor > counted ? r.floorUntil - now : nextResetMs(r.buckets, specs[i]!, now);
         out[dim] = { used, limit, remaining: Math.max(0, limit - used), resetInMs };
       });

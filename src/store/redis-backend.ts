@@ -38,6 +38,19 @@ local function sweep()
   end
 end
 
+-- A provider floor (see floor.ts): the reading, flat or draining linearly from 'used'
+-- at 'at' to 0 at 'until', plus 'added' calls reserved since the reading.
+-- Returns current value, used, until, at, drain, added.
+local function readFloor(series)
+  local f = redis.call('HMGET', p .. 'f:' .. series, 'used', 'until', 'at', 'drain', 'added')
+  if not f[1] or tonumber(f[2]) <= now then return 0, 0, 0, 0, 0, 0 end
+  local used, untilMs, at = tonumber(f[1]), tonumber(f[2]), tonumber(f[3])
+  local drain, added = tonumber(f[4]), tonumber(f[5] or '0') or 0
+  local reading = used
+  if drain == 1 and at < untilMs then reading = used * (untilMs - now) / (untilMs - at) end
+  return reading + added, used, untilMs, at, drain, added
+end
+
 local function rank(w)
   if w == -1 then return math.huge end
   return w
@@ -64,14 +77,18 @@ if op == 'reserve' then
         live[#live + 1] = { start, amount }
       end
     end
-    local f = redis.call('HMGET', p .. 'f:' .. series, 'used', 'until')
-    local floorUsed, floorUntil = 0, 0
-    if f[1] and tonumber(f[2]) > now then
-      floorUsed, floorUntil = tonumber(f[1]), tonumber(f[2])
-    end
+    local floorNow, floorUsed, floorUntil, floorAt, floorDrain, floorAdded = readFloor(series)
     local wait = 0
-    if floorUsed > used and floorUsed + need > limit then
-      if need > limit then wait = -1 else wait = floorUntil - now end
+    if floorNow > used and floorNow + need > limit then
+      local room = limit - need - floorAdded
+      if need > limit then
+        wait = -1
+      elseif floorDrain == 1 and floorAt < floorUntil and room >= 0 then
+        local fitsAt = floorUntil - room * (floorUntil - floorAt) / floorUsed
+        wait = math.min(floorUntil - now, math.max(1, math.ceil(fitsAt - now)))
+      else
+        wait = floorUntil - now
+      end
     elseif need > limit then
       wait = -1
     elseif used + need > limit then
@@ -101,6 +118,9 @@ if op == 'reserve' then
       local sk = p .. 's:' .. ARGV[b]
       redis.call('HINCRBY', sk, ARGV[b + 4], ARGV[b + 1])
       redis.call('PEXPIRE', sk, ARGV[b + 9])
+      local fk = p .. 'f:' .. ARGV[b]
+      local fu = redis.call('HGET', fk, 'until')
+      if fu and tonumber(fu) > now then redis.call('HINCRBY', fk, 'added', ARGV[b + 1]) end
       redis.call('HSET', rk, tostring(i + 1), ARGV[b] .. '\t' .. ARGV[b + 4] .. '\t' .. ARGV[b + 1])
     end
     redis.call('PEXPIRE', rk, ttl + 3600000)
@@ -149,12 +169,12 @@ end
 if op == 'truth' then
   local n = tonumber(ARGV[4])
   for i = 0, n - 1 do
-    local b = 5 + i * 3
+    local b = 5 + i * 4
     local fk = p .. 'f:' .. ARGV[b]
     local used, untilMs = tonumber(ARGV[b + 1]), tonumber(ARGV[b + 2])
-    local f = redis.call('HMGET', fk, 'used', 'until')
-    if not f[1] or tonumber(f[2]) <= now or used >= tonumber(f[1]) then
-      redis.call('HSET', fk, 'used', ARGV[b + 1], 'until', ARGV[b + 2])
+    local current, _, _, _, curDrain = readFloor(ARGV[b])
+    if used >= current or (curDrain == 1 and ARGV[b + 3] == '0') then
+      redis.call('HSET', fk, 'used', ARGV[b + 1], 'until', ARGV[b + 2], 'at', string.format('%d', now), 'drain', ARGV[b + 3], 'added', '0')
       redis.call('PEXPIRE', fk, math.max(1000, untilMs - now))
     end
   end
@@ -168,9 +188,8 @@ if op == 'usage' then
   for i = 0, n - 1 do
     local b = 5 + i * 2
     local series, from = ARGV[b], tonumber(ARGV[b + 1])
-    local f = redis.call('HMGET', p .. 'f:' .. series, 'used', 'until')
-    local row = { 0, 0 }
-    if f[1] and tonumber(f[2]) > now then row = { tonumber(f[1]), tonumber(f[2]) } end
+    local _, floorUsed, floorUntil, floorAt, floorDrain, floorAdded = readFloor(series)
+    local row = { floorUsed, floorUntil, floorAt, floorDrain, floorAdded }
     local all = redis.call('HGETALL', p .. 's:' .. series)
     for j = 1, #all, 2 do
       if tonumber(all[j]) >= from then
@@ -254,7 +273,10 @@ export function redisBackend(run: RunScript, prefix: string): StoreBackend {
     },
 
     async truth({ entries, now }) {
-      await call('truth', now, [String(entries.length), ...entries.flatMap((e) => [e.series, int(e.used), int(e.until)])]);
+      await call('truth', now, [
+        String(entries.length),
+        ...entries.flatMap((e) => [e.series, int(e.used), int(e.until), e.drain ? '1' : '0']),
+      ]);
     },
 
     async usage({ entries, now }) {
@@ -265,8 +287,8 @@ export function redisBackend(run: RunScript, prefix: string): StoreBackend {
       return reply.map((row): SeriesUsage => {
         const nums = row.map(Number);
         const buckets: [number, number][] = [];
-        for (let i = 2; i < nums.length; i += 2) buckets.push([nums[i]!, nums[i + 1]!]);
-        return { floorUsed: nums[0]!, floorUntil: nums[1]!, buckets };
+        for (let i = 5; i < nums.length; i += 2) buckets.push([nums[i]!, nums[i + 1]!]);
+        return { floorUsed: nums[0]!, floorUntil: nums[1]!, floorAt: nums[2]!, floorDrain: nums[3] === 1, floorAdded: nums[4]!, buckets };
       });
     },
 

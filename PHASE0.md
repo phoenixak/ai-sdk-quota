@@ -42,6 +42,14 @@ This is how the pool can switch models mid-stream without ever duplicating text.
 
 Data use: Gemini's free tier is listed as "Used to improve our products: Yes". Use the `may-train` tag and `exclude: ['may-train']` for private data.
 
+### Observed on real accounts (2026-10-19, free tiers)
+
+Benchmark and probe runs with real keys added what the docs don't say:
+
+- **Groq:** the live headers matched the docs exactly (1,000 RPD, 8,000 TPM). The daily window is rolling (`x-ratelimit-reset-requests: 1m26.4s`). 429 bodies name the window: "on requests per minute (RPM): Limit 30, Used 30, Requested 1. Please try again in 2s." But the sustained rate allowed for `openai/gpt-oss-20b` was about **20 RPM**, not 30. A pool admitting one call every 2 s after a 429 hit another 429 exactly every 9 s, while its own rolling count was 20. Earlier the same day a burst of 32 in one minute got through. So the enforced rate varies; the pool now adapts from named 429s.
+- **Gemini:** `gemini-3.5-flash-lite` accepted 22 requests in one minute and over 120 in a day on one free project without a daily 429.
+- **OpenRouter:** the probe's `/api/v1/key` read matched the docs (50/day). Several `:free` models returned upstream 429s ("temporarily rate-limited upstream"): congestion on the free model itself, not the account's limit. Reasoning models (e.g. a Nemotron variant) can spend a 256-token budget on reasoning and return empty text.
+
 ### What this means for the design
 - **Reset kinds:** `rolling` (Groq), `midnight` in a given time zone (Gemini: `America/Los_Angeles`; OpenRouter: `UTC`). Pacific midnight crosses daylight-saving changes, so days are 23 or 25 hours long twice a year.
 - **Limit groups:** quotas shared across models, such as `openrouter:free-daily`, are separate buckets that every member in the group charges.

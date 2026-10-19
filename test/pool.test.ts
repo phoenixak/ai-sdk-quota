@@ -110,6 +110,92 @@ describe('createQuotaPool: generate', () => {
     ]);
   });
 
+  it('after a named RPM 429 it sends one call when a slot frees, not a burst (benchmark regression)', async () => {
+    const s = setup();
+    const body = JSON.stringify({
+      error: { message: 'Rate limit reached for model `x` on requests per minute (RPM): Limit 30, Used 30, Requested 1. Please try again in 2s.' },
+    });
+    let first = true;
+    const a = mock('groq.chat', 'openai/gpt-oss-20b', {
+      doGenerate: async () => {
+        if (first) {
+          first = false;
+          throw apiError(429, { headers: { 'retry-after': '2' }, body });
+        }
+        return generated('a');
+      },
+    });
+    const b = mock('groq.chat', 'qwen/qwen3.8-27b', { doGenerate: generated('b') });
+    const pool = createQuotaPool({ models: [{ id: 'a', model: a, limits: { rpm: 30 } }, { id: 'b', model: b, limits: { rpm: 30 } }], ...s });
+    const served = async () => ((await pool.model().doGenerate({ prompt: userPrompt('x') })).providerMetadata?.['aiSdkQuota'] as { memberId: string }).memberId;
+    expect(await served()).toBe('b');
+    // Our own count for a is 0, but Groq said its window is full. The effective limit
+    // dropped to 22 (adaptive), and the full window drains from 22: one call fits at
+    // 61000 / 22 = 2773 ms, and only one.
+    s.clock.advance(2_772);
+    expect(await served()).toBe('b');
+    s.clock.advance(1);
+    expect(await Promise.all([served(), served(), served()])).toEqual(['a', 'b', 'b']);
+    expect(a.doGenerateCalls).toHaveLength(2);
+    expect(s.events.filter((e) => e.type === 'adapt')).toEqual([{ type: 'adapt', memberId: 'a', dim: 'rpm', factor: 0.75 }]);
+  });
+
+  it('adapts to a provider that allows less than its published rate, and recovers', async () => {
+    const s = setup();
+    const body = 'Rate limit reached on requests per minute (RPM): Limit 40, Used 40';
+    let fail = 2;
+    const a = mock('groq.chat', 'x', {
+      doGenerate: async () => {
+        if (fail-- > 0) throw apiError(429, { headers: { 'retry-after': '1' }, body });
+        return generated('a');
+      },
+    });
+    const pool = createQuotaPool({ models: [{ id: 'a', model: a, limits: { rpm: 40 } }], adaptive: { recoverMs: 100_000 }, ...s });
+    const limitNow = async () => (await pool.snapshot()).members[0]!.usage.rpm?.limit;
+    await expect(pool.model().doGenerate({ prompt: userPrompt('x') })).rejects.toBeInstanceOf(PoolExhaustedError);
+    s.clock.advance(61_000);
+    await expect(pool.model().doGenerate({ prompt: userPrompt('x') })).rejects.toBeInstanceOf(PoolExhaustedError);
+    const factors = s.events.filter((e) => e.type === 'adapt').map((e) => (e as { factor: number }).factor);
+    // 0.75, then 0.75 of the partly recovered factor (0.75 + 0.61 * 0.25 = 0.9025).
+    expect(factors).toEqual([0.75, 0.676875]);
+    // The snapshot shows configured limits; the pool enforces the adapted one.
+    expect(await limitNow()).toBe(40);
+    // Fully recovered after recoverMs: 40 calls fit again in one window.
+    s.clock.advance(100_000);
+    for (let i = 0; i < 40; i++) await pool.model().doGenerate({ prompt: userPrompt('x') });
+    await expect(pool.model().doGenerate({ prompt: userPrompt('x') })).rejects.toBeInstanceOf(PoolExhaustedError);
+  });
+
+  it('can turn adaptation off', async () => {
+    const s = setup();
+    const a = mock('groq.chat', 'x', {
+      doGenerate: async () => {
+        throw apiError(429, { body: 'on requests per minute (RPM)' });
+      },
+    });
+    const pool = createQuotaPool({ models: [{ id: 'a', model: a, limits: { rpm: 30 } }], adaptive: false, ...s });
+    await expect(pool.model().doGenerate({ prompt: userPrompt('x') })).rejects.toBeInstanceOf(PoolExhaustedError);
+    expect(s.events.some((e) => e.type === 'adapt')).toBe(false);
+    // Without adaptation the full window drains from the configured 30: one call fits at 2034 ms.
+    s.clock.advance(2_034);
+    const error = (await failure(pool.model().doGenerate({ prompt: userPrompt('x') }))) as PoolExhaustedError;
+    expect(error.failures[0]!.reason).toBe('rate-limit');
+  });
+
+  it('ignores a named window the member has no limit for', async () => {
+    const s = setup();
+    const a = mock('groq.chat', 'x', {
+      doGenerate: async () => {
+        throw apiError(429, { headers: { 'retry-after': '1' }, body: 'Rate limit reached on tokens per minute (TPM)' });
+      },
+    });
+    const pool = createQuotaPool({ models: [{ id: 'a', model: a, limits: { rpm: 30 } }], ...s });
+    await expect(pool.model().doGenerate({ prompt: userPrompt('x') })).rejects.toBeInstanceOf(PoolExhaustedError);
+    s.clock.advance(1_000);
+    const snap = await pool.snapshot();
+    expect(snap.members[0]!.usage).toEqual({ rpm: { used: 0, limit: 30, remaining: 30, resetInMs: 0 } });
+  });
+
   it('rethrows validation errors without trying other members', async () => {
     const s = setup();
     const bad = apiError(400);
@@ -176,10 +262,10 @@ describe('createQuotaPool: generate', () => {
     const error = await failure(generateText({ model: m, prompt: 'hi', maxRetries: 0 }));
     expect(error).toBeInstanceOf(PoolExhaustedError);
     expect((error as PoolExhaustedError).failures).toEqual([
-      { memberId: 'a', reason: 'quota', retryAfterMs: 31_000 },
+      { memberId: 'a', reason: 'quota', retryAfterMs: 32_000 },
       { memberId: 'b', reason: 'never-fits' },
     ]);
-    expect((error as PoolExhaustedError).retryAfterMs).toBe(31_000);
+    expect((error as PoolExhaustedError).retryAfterMs).toBe(32_000);
   });
 
   it('applies provider headers from a successful call', async () => {
@@ -537,7 +623,24 @@ describe('createQuotaPool: configuration', () => {
     expect(model).toMatchObject({ specificationVersion: 'v4', provider: 'ai-sdk-quota', modelId: 'a|b', supportedUrls: {} });
   });
 
+  it('applies safetyMargin to member and group limits', async () => {
+    const a = mock('openrouter.chat', 'some/model:free', { doGenerate: generated('ok') });
+    const pool = createQuotaPool({
+      models: [{ id: 'a', model: a, limits: 'openrouter:free' }],
+      groups: { 'openrouter:free-daily': { rpd: 50, dailyReset: { timeZone: 'UTC' } } },
+      safetyMargin: 0.9,
+    });
+    await pool.model().doGenerate({ prompt: userPrompt('x') });
+    const snap = await pool.snapshot();
+    expect(snap.members[0]!.usage.rpm?.limit).toBe(18);
+    expect(snap.groups[0]!.usage.rpd?.limit).toBe(45);
+    const tiny = createQuotaPool({ models: [{ id: 'a', model: a, limits: { rps: 1 } }], safetyMargin: 0.5 });
+    expect((await tiny.snapshot()).members[0]!.usage.rps?.limit).toBe(1);
+  });
+
   it('rejects bad configuration', () => {
+    expect(() => createQuotaPool({ models: [{ id: 'a', model: m }], safetyMargin: 0 })).toThrow('safetyMargin');
+    expect(() => createQuotaPool({ models: [{ id: 'a', model: m }], safetyMargin: 1.5 })).toThrow('safetyMargin');
     expect(() => createQuotaPool({ models: [] })).toThrow('empty');
     expect(() => createQuotaPool({ models: [{ id: 'a', model: m }, { id: 'a', model: m }] })).toThrow('duplicate');
     expect(() => createQuotaPool({ models: [{ id: 'a', model: m, limits: 'groq:paid' }] })).toThrow('no registry limits');

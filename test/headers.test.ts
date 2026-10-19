@@ -4,6 +4,7 @@ import {
   adapterFor,
   geminiHeaders,
   groqHeaders,
+  namedWindows,
   noHeaders,
   openaiHeaders,
   openrouterHeaders,
@@ -106,6 +107,33 @@ describe('openaiHeaders', () => {
   });
 });
 
+describe('named windows in 429 bodies', () => {
+  // The shape of Groq's real 429 body (organization id replaced).
+  const groq429 = JSON.stringify({
+    error: {
+      message:
+        'Rate limit reached for model `openai/gpt-oss-20b` in organization `org_000` service tier `on_demand` on requests per minute (RPM): Limit 30, Used 30, Requested 1. Please try again in 2s.',
+      type: 'requests',
+      code: 'rate_limit_exceeded',
+    },
+  });
+
+  it('reads the window from Groq and OpenAI-style 429 messages', () => {
+    expect(groqHeaders({ status: 429, body: groq429, headers: { 'retry-after': '2' } }, NOW)).toEqual({
+      truths: [],
+      retryAfterMs: 2_000,
+      limited: ['rpm'],
+    });
+    expect(openaiHeaders({ status: 429, body: 'on tokens per min (TPM): Limit 8000 ... (TPM) and (RPD)' }, NOW).limited).toEqual(['tpm', 'rpd']);
+  });
+
+  it('ignores bodies of other statuses and messages without a named window', () => {
+    expect(groqHeaders({ status: 400, body: groq429 }, NOW).limited).toBeUndefined();
+    expect(groqHeaders({ status: 429, body: 'slow down' }, NOW).limited).toBeUndefined();
+    expect(namedWindows(undefined)).toEqual([]);
+  });
+});
+
 describe('openrouterHeaders', () => {
   it('prefers Retry-After, then the reset timestamp', () => {
     expect(openrouterHeaders({ status: 429, headers: { 'Retry-After': '10', 'X-RateLimit-Reset': String(NOW + 99_000) } }, NOW)).toEqual({
@@ -138,7 +166,7 @@ describe('geminiHeaders', () => {
       },
       NOW,
     );
-    expect(reading).toEqual({ truths: [], retryAfterMs: 51_000, dailyExhausted: true });
+    expect(reading).toEqual({ truths: [], retryAfterMs: 51_000, dailyExhausted: true, limited: ['rpd'] });
   });
 
   it('handles array-wrapped bodies and per-minute quotas', () => {
@@ -156,7 +184,26 @@ describe('geminiHeaders', () => {
       },
       NOW,
     );
-    expect(reading).toEqual({ truths: [] });
+    expect(reading).toEqual({ truths: [], limited: ['rpm'] });
+  });
+
+  it('maps token quotas to token windows', () => {
+    const reading = geminiHeaders(
+      {
+        body: body([
+          {
+            '@type': 'type.googleapis.com/google.rpc.QuotaFailure',
+            violations: [
+              { quotaId: 'GenerateContentInputTokensPerModelPerMinute-FreeTier' },
+              { quotaId: 'GenerateContentInputTokensPerModelPerDay-FreeTier' },
+              { quotaId: 'SomethingElse' },
+            ],
+          },
+        ]),
+      },
+      NOW,
+    );
+    expect(reading).toEqual({ truths: [], dailyExhausted: true, limited: ['tpm', 'tpd'] });
   });
 
   it('falls back to the message text, then to retry-after', () => {

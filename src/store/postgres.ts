@@ -41,7 +41,10 @@ create index if not exists quota_buckets_expires_at on ${s}.quota_buckets (expir
 create table if not exists ${s}.quota_floors (
   series text primary key,
   used bigint not null,
-  until bigint not null
+  until bigint not null,
+  at_ms bigint not null,
+  drain boolean not null default false,
+  added bigint not null default 0
 );
 
 create table if not exists ${s}.quota_reservations (
@@ -77,6 +80,11 @@ declare
   v_used bigint;
   v_floor_used bigint;
   v_floor_until bigint;
+  v_floor_at bigint;
+  v_floor_drain boolean;
+  v_floor_added bigint;
+  v_floor_now numeric;
+  v_room bigint;
   v_need bigint;
   v_limit bigint;
   v_wait bigint;
@@ -109,12 +117,27 @@ begin
       v_limit := (o->>'limit')::bigint;
       delete from ${s}.quota_buckets where series = o->>'series' and bucket < (o->>'from')::bigint;
       select coalesce(sum(amount), 0) into v_used from ${s}.quota_buckets where series = o->>'series';
-      select f.used, f.until into v_floor_used, v_floor_until from ${s}.quota_floors f
-        where f.series = o->>'series' and f.until > v_now;
-      v_floor_used := coalesce(v_floor_used, 0);
+      v_floor_used := null; v_floor_until := null; v_floor_at := null; v_floor_drain := null; v_floor_added := null;
+      select f.used, f.until, f.at_ms, f.drain, f.added
+        into v_floor_used, v_floor_until, v_floor_at, v_floor_drain, v_floor_added
+        from ${s}.quota_floors f where f.series = o->>'series' and f.until > v_now;
+      -- See floor.ts: the reading (flat, or draining from used at at_ms to 0 at until) plus calls added since.
+      v_floor_now := case
+        when v_floor_used is null then 0
+        when v_floor_drain and v_floor_at < v_floor_until
+          then v_floor_used::numeric * (v_floor_until - v_now) / (v_floor_until - v_floor_at) + v_floor_added
+        else v_floor_used + v_floor_added end;
       v_wait := 0;
-      if v_floor_used > v_used and v_floor_used + v_need > v_limit then
-        v_wait := case when v_need > v_limit then -1 else v_floor_until - v_now end;
+      if v_floor_now > v_used and v_floor_now + v_need > v_limit then
+        v_room := v_limit - v_need - coalesce(v_floor_added, 0);
+        if v_need > v_limit then
+          v_wait := -1;
+        elsif v_floor_drain and v_floor_at < v_floor_until and v_room >= 0 then
+          v_wait := least(v_floor_until - v_now, greatest(1, ceil(
+            v_floor_until - v_room::numeric * (v_floor_until - v_floor_at) / v_floor_used - v_now)))::bigint;
+        else
+          v_wait := v_floor_until - v_now;
+        end if;
       elsif v_need > v_limit then
         v_wait := -1;
       elsif v_used + v_need > v_limit then
@@ -145,6 +168,8 @@ begin
           on conflict (series, bucket) do update
             set amount = ${s}.quota_buckets.amount + excluded.amount,
                 expires_at = greatest(${s}.quota_buckets.expires_at, excluded.expires_at);
+        update ${s}.quota_floors set added = added + (o->>'need')::bigint
+          where series = o->>'series' and until > v_now;
       end loop;
       insert into ${s}.quota_reservations (id, placements, expires_at)
         select p->>'id',
@@ -192,22 +217,33 @@ begin
 
   elsif v_op = 'truth' then
     for o in select value from jsonb_array_elements(p->'entries') loop
-      insert into ${s}.quota_floors (series, used, until)
-        values (o->>'series', (o->>'used')::bigint, (o->>'until')::bigint)
-        on conflict (series) do update set used = excluded.used, until = excluded.until
-          where ${s}.quota_floors.until <= v_now or excluded.used >= ${s}.quota_floors.used;
+      insert into ${s}.quota_floors (series, used, until, at_ms, drain, added)
+        values (o->>'series', (o->>'used')::bigint, (o->>'until')::bigint, v_now, (o->>'drain')::boolean, 0)
+        on conflict (series) do update
+          set used = excluded.used, until = excluded.until, at_ms = excluded.at_ms, drain = excluded.drain, added = 0
+          where ${s}.quota_floors.until <= v_now
+             or (${s}.quota_floors.drain and not excluded.drain)
+             or excluded.used >= ${s}.quota_floors.added + case
+                  when ${s}.quota_floors.drain and ${s}.quota_floors.at_ms < ${s}.quota_floors.until
+                    then ${s}.quota_floors.used::numeric * (${s}.quota_floors.until - v_now)
+                         / (${s}.quota_floors.until - ${s}.quota_floors.at_ms)
+                  else ${s}.quota_floors.used end;
     end loop;
     return 'true'::jsonb;
 
   elsif v_op = 'usage' then
     v_out := '[]'::jsonb;
     for o in select value from jsonb_array_elements(p->'entries') loop
-      select f.used, f.until into v_floor_used, v_floor_until from ${s}.quota_floors f
-        where f.series = o->>'series' and f.until > v_now;
+      v_floor_used := null; v_floor_until := null; v_floor_at := null; v_floor_drain := null; v_floor_added := null;
+      select f.used, f.until, f.at_ms, f.drain, f.added
+        into v_floor_used, v_floor_until, v_floor_at, v_floor_drain, v_floor_added
+        from ${s}.quota_floors f where f.series = o->>'series' and f.until > v_now;
       select coalesce(jsonb_agg(jsonb_build_array(b.bucket, b.amount) order by b.bucket), '[]'::jsonb) into v_row
         from ${s}.quota_buckets b where b.series = o->>'series' and b.bucket >= (o->>'from')::bigint;
       v_out := v_out || jsonb_build_array(jsonb_build_object(
-        'floorUsed', coalesce(v_floor_used, 0), 'floorUntil', coalesce(v_floor_until, 0), 'buckets', v_row));
+        'floorUsed', coalesce(v_floor_used, 0), 'floorUntil', coalesce(v_floor_until, 0),
+        'floorAt', coalesce(v_floor_at, 0), 'floorDrain', coalesce(v_floor_drain, false),
+        'floorAdded', coalesce(v_floor_added, 0), 'buckets', v_row));
     end loop;
     return v_out;
 
@@ -278,12 +314,18 @@ export function postgresStore(db: PgQueryable, options: PostgresStoreOptions = {
       const rows = (await op({ op: 'usage', now, entries: entries.map((e) => ({ ...e, series: ns(e.series) })) })) as {
         floorUsed: number;
         floorUntil: number;
+        floorAt: number;
+        floorDrain: boolean;
+        floorAdded: number;
         buckets: [number, number][];
       }[];
       return rows.map(
         (r): SeriesUsage => ({
           floorUsed: Number(r.floorUsed),
           floorUntil: Number(r.floorUntil),
+          floorAt: Number(r.floorAt),
+          floorDrain: r.floorDrain === true,
+          floorAdded: Number(r.floorAdded),
           buckets: r.buckets.map(([b, a]) => [Number(b), Number(a)]),
         }),
       );

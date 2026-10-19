@@ -17,8 +17,8 @@ import { type ResolvedMember, type Strategy, headroom, selectMembers } from './s
 import { memoryStore } from './store/memory.js';
 import type { Charge, QuotaStore, Reservation, Usage } from './store/types.js';
 import { holdUntilFirstChunk } from './stream.js';
-import type { Capabilities, Clock, HeaderReading, Limits, PoolEvent, PoolMember } from './types.js';
-import { nextDayStart } from './windows.js';
+import type { Capabilities, Clock, Dimension, HeaderReading, Limits, PoolEvent, PoolMember, ProviderTruth } from './types.js';
+import { DIMENSIONS, nextDayStart, windowSpec } from './windows.js';
 
 export interface QuotaPoolOptions {
   models: PoolMember[];
@@ -45,6 +45,21 @@ export interface QuotaPoolOptions {
   stickyTtlMs?: number;
   /** Strip other providers' data from the prompt before calling a member. Default true. */
   stripForeignProviderData?: boolean;
+  /**
+   * Use this fraction of every provider limit (members and groups; not your budgets).
+   * Providers count windows differently from a strict sliding window (Groq rejected
+   * calls a 60s sliding count allowed when traffic was front-loaded), so a little
+   * margin trades some throughput for fewer 429s. Default 1.
+   */
+  safetyMargin?: number;
+  /**
+   * Learn a provider's real rate from its 429s. When a 429 names a window, that
+   * member's effective limit for the window drops to 75% (never below 25%), then
+   * climbs back linearly to the configured limit over `recoverMs` (default 5 minutes).
+   * Providers don't always allow their published rate (Groq sustained ~20 of a
+   * published 30 RPM for one free account on 2026-10-19). Per process. `false` turns it off.
+   */
+  adaptive?: false | { recoverMs?: number };
   clock?: Clock;
   random?: () => number;
   onEvent?: (event: PoolEvent) => void;
@@ -85,6 +100,21 @@ export interface QuotaPool {
 
 const DAY_MS = 86_400_000;
 
+/**
+ * A 429 that names its window means the provider counts it full, whatever we counted
+ * (other processes, earlier runs, clock skew). Rolling windows drain over their length;
+ * calendar days stay full until the next local midnight.
+ */
+function fullWindows(m: ResolvedMember, reading: HeaderReading, now: number): ProviderTruth[] {
+  return (reading.limited ?? []).flatMap((dim): ProviderTruth[] => {
+    if (m.limits[dim] === undefined) return [];
+    const spec = windowSpec(dim, m.limits.dailyReset);
+    return spec.kind === 'rolling'
+      ? [{ dim, remaining: 0, resetInMs: spec.windowMs, drain: true }]
+      : [{ dim, remaining: 0, resetInMs: nextDayStart(now, spec.timeZone) - now }];
+  });
+}
+
 /** Tells the caller which member answered: `result.providerMetadata.aiSdkQuota.memberId`. */
 function servedBy(m: ResolvedMember) {
   return { aiSdkQuota: { memberId: m.member.id, provider: m.member.model.provider, modelId: m.member.model.modelId } };
@@ -110,10 +140,41 @@ export function createQuotaPool(options: QuotaPoolOptions): QuotaPool {
   const outputs = new OutputEstimator(options.expectedOutputTokens ?? 512);
   const rateLimitStreak = new Map<string, number>();
   const members = resolveMembers(options);
+  const recoverMs = options.adaptive === false ? 0 : (options.adaptive?.recoverMs ?? 300_000);
+  // memberId|dim -> the factor set by the last named 429, and when.
+  const adapted = new Map<string, { factor: number; at: number }>();
+
+  function factorFor(memberId: string, dim: Dimension, now: number): number {
+    const a = adapted.get(`${memberId}|${dim}`);
+    if (!a) return 1;
+    const factor = Math.min(1, a.factor + ((now - a.at) / recoverMs) * (1 - a.factor));
+    if (factor >= 1) adapted.delete(`${memberId}|${dim}`);
+    return factor;
+  }
+
+  function effectiveLimits(m: ResolvedMember, now: number): Limits {
+    if (!adapted.size) return m.limits;
+    const out: Limits = { ...m.limits };
+    for (const dim of DIMENSIONS) {
+      const v = m.limits[dim];
+      if (v !== undefined) out[dim] = Math.max(1, Math.floor(v * factorFor(m.member.id, dim, now)));
+    }
+    return out;
+  }
+
+  function adapt(m: ResolvedMember, reading: HeaderReading, now: number) {
+    if (!recoverMs) return;
+    for (const dim of reading.limited ?? []) {
+      if (m.limits[dim] === undefined) continue;
+      const factor = Math.max(0.25, factorFor(m.member.id, dim, now) * 0.75);
+      adapted.set(`${m.member.id}|${dim}`, { factor, at: now });
+      emit({ type: 'adapt', memberId: m.member.id, dim, factor });
+    }
+  }
   const groupIds = [...new Set(members.flatMap((m) => m.groups.map((g) => g.key)))];
 
   function charges(m: ResolvedMember, tokens: number, budgetKey: string | undefined): Charge[] {
-    const list: Charge[] = [{ key: m.key, limits: m.limits, requests: 1, tokens }];
+    const list: Charge[] = [{ key: m.key, limits: effectiveLimits(m, clock.now()), requests: 1, tokens }];
     for (const g of m.groups) list.push({ key: g.key, limits: g.limits, requests: 1, tokens });
     if (budgetKey !== undefined && options.budgets?.perKey) {
       list.push({ key: `b:${budgetKey}`, limits: options.budgets.perKey, requests: 1, tokens });
@@ -122,7 +183,7 @@ export function createQuotaPool(options: QuotaPoolOptions): QuotaPool {
   }
 
   async function applyReading(m: ResolvedMember, reading: HeaderReading, now: number) {
-    if (reading.truths.length) await store.applyProviderTruth(m.key, m.limits, reading.truths, now);
+    if (reading.truths.length) await store.applyProviderTruth(m.key, effectiveLimits(m, now), reading.truths, now);
   }
 
   function totalTokens(usage: LanguageModelV4Usage | undefined): number | undefined {
@@ -233,8 +294,10 @@ export function createQuotaPool(options: QuotaPoolOptions): QuotaPool {
         const reading = isApiError
           ? adapterFor(m.member)({ headers: error.responseHeaders, status: error.statusCode, body: error.responseBody }, now)
           : { truths: [] };
-        await applyReading(m, reading, now);
         emit({ type: 'fail', memberId: m.member.id, kind, error });
+        // Lower the effective limit first, so the full window drains from the provider's real pace.
+        adapt(m, reading, now);
+        await applyReading(m, { ...reading, truths: [...reading.truths, ...fullWindows(m, reading, now)] }, now);
         await cooldownAfter(m, kind, reading, now);
         failures.push({
           memberId: m.member.id,
@@ -372,8 +435,20 @@ function raceAbort<T>(promise: PromiseLike<T>, signal: AbortSignal): Promise<T> 
   });
 }
 
+function withMargin(limits: Limits, margin: number): Limits {
+  if (margin === 1) return limits;
+  const out: Limits = { ...limits };
+  for (const dim of ['rps', 'rpm', 'rpd', 'tpm', 'tpd'] as const) {
+    const v = limits[dim];
+    if (v !== undefined) out[dim] = Math.max(1, Math.floor(v * margin));
+  }
+  return out;
+}
+
 function resolveMembers(options: QuotaPoolOptions): ResolvedMember[] {
   if (!options.models.length) throw new Error('createQuotaPool: `models` is empty');
+  const margin = options.safetyMargin ?? 1;
+  if (!(margin > 0 && margin <= 1)) throw new Error('createQuotaPool: `safetyMargin` must be in (0, 1]');
   const seen = new Set<string>();
   return options.models.map((member) => {
     if (seen.has(member.id)) throw new Error(`createQuotaPool: duplicate member id "${member.id}"`);
@@ -393,8 +468,8 @@ function resolveMembers(options: QuotaPoolOptions): ResolvedMember[] {
     const groups = groupIds.map((id) => {
       const groupLimits = options.groups?.[id] ?? resolveGroup(id);
       if (!groupLimits) throw new Error(`createQuotaPool: no limits for group "${id}"`);
-      return { key: `g:${id}`, limits: groupLimits };
+      return { key: `g:${id}`, limits: withMargin(groupLimits, margin) };
     });
-    return { member, key: `m:${member.id}`, limits, groups };
+    return { member, key: `m:${member.id}`, limits: withMargin(limits, margin), groups };
   });
 }

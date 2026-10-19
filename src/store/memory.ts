@@ -9,6 +9,7 @@ import {
   windowStart,
   windowSum,
 } from '../windows.js';
+import { type Floor, floorAt, floorWait, replacesFloor } from './floor.js';
 import type { Charge, Placement, QuotaStore, Reservation, ReserveResult, Usage } from './types.js';
 
 interface Series {
@@ -16,10 +17,6 @@ interface Series {
   limits: Limits;
 }
 
-interface Floor {
-  used: number;
-  until: number;
-}
 
 /**
  * Keeps everything in this process. Correct for a single long-running server;
@@ -74,8 +71,7 @@ export function memoryStore(): QuotaStore {
   }
 
   function floorFor(key: string, dim: Dimension, now: number): number {
-    const f = floors.get(seriesKey(key, dim));
-    return f && f.until > now ? f.used : 0;
+    return floorAt(floors.get(seriesKey(key, dim)), now);
   }
 
   function amountFor(charge: Charge, dim: Dimension): number {
@@ -101,7 +97,7 @@ export function memoryStore(): QuotaStore {
             floor > used && floor + need > limit
               ? need > limit
                 ? Infinity
-                : floors.get(seriesKey(charge.key, dim))!.until - now
+                : floorWait(floors.get(seriesKey(charge.key, dim))!, now, need, limit)
               : retryAfterMs(s.buckets, spec, now, need, limit);
           if (wait > 0 && (!worst || wait > worst.retryAfterMs)) worst = { retryAfterMs: wait, key: charge.key, dim };
         }
@@ -116,6 +112,8 @@ export function memoryStore(): QuotaStore {
           const s = getSeries(charge.key, dim, charge.limits);
           const bucket = bucketStart(windowSpec(dim, charge.limits.dailyReset), now);
           s.buckets.set(bucket, (s.buckets.get(bucket) ?? 0) + amount);
+          const f = floors.get(seriesKey(charge.key, dim));
+          if (f && f.until > now) f.added += amount;
           placements.push({ key: charge.key, dim, bucket, amount });
         }
       }
@@ -152,10 +150,13 @@ export function memoryStore(): QuotaStore {
       for (const t of truths) {
         const limit = limits[t.dim];
         if (limit === undefined) continue;
-        const used = Math.max(0, limit - t.remaining);
+        // Measure against the provider's own limit when it reported one (the pool may enforce less).
+        const used = Math.max(0, (t.limit ?? limit) - t.remaining);
         const id = seriesKey(key, t.dim);
-        const current = floors.get(id);
-        if (!current || current.until <= now || used >= current.used) floors.set(id, { used, until: now + t.resetInMs });
+        // A reading replaces the floor unless it's lower than what we already account for.
+        if (replacesFloor(floors.get(id), used, t.drain === true, now)) {
+          floors.set(id, { used, until: now + t.resetInMs, at: now, drain: t.drain === true, added: 0 });
+        }
       }
     },
 
@@ -170,7 +171,7 @@ export function memoryStore(): QuotaStore {
         prune(s, dim, now);
         const counted = windowSum(s.buckets, spec, now);
         const floor = floorFor(key, dim, now);
-        const used = Math.max(counted, floor);
+        const used = Math.max(counted, Math.ceil(floor));
         const resetInMs =
           floor > counted ? floors.get(seriesKey(key, dim))!.until - now : nextResetMs(s.buckets, spec, now);
         out[dim] = { used, limit, remaining: Math.max(0, limit - used), resetInMs };

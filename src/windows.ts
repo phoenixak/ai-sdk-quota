@@ -19,14 +19,21 @@ export type WindowSpec =
 const SECOND = 1_000;
 const MINUTE = 60 * SECOND;
 const DAY = 24 * 60 * MINUTE;
+/**
+ * Short windows count each call a little longer than the provider does, because the
+ * provider stamps a request when it arrives and we stamp it when we send it. Without
+ * this, a pool running a model right at its limit gets 429s from timing jitter alone
+ * (measured against Groq, 2026-10-19).
+ */
+export const SLACK = { rps: 100, minute: SECOND } as const;
 
 export function windowSpec(dim: Dimension, dailyReset: DailyReset = 'rolling'): WindowSpec {
   switch (dim) {
     case 'rps':
-      return { kind: 'rolling', windowMs: SECOND, bucketMs: 100 };
+      return { kind: 'rolling', windowMs: SECOND + SLACK.rps, bucketMs: 100 };
     case 'rpm':
     case 'tpm':
-      return { kind: 'rolling', windowMs: MINUTE, bucketMs: SECOND };
+      return { kind: 'rolling', windowMs: MINUTE + SLACK.minute, bucketMs: SECOND };
     case 'rpd':
     case 'tpd':
       return dailyReset === 'rolling'

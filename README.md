@@ -31,6 +31,7 @@ const result = streamText({
 
 - **Before each call** it estimates the tokens (prompt length, plus a running average of each model's real replies) and **atomically reserves** capacity in every window that applies: per minute, per day, per second, tokens per minute and per day, for the model, any shared group (e.g. OpenRouter's daily cap across all `:free` models) and an optional budget key (a user or tenant).
 - **After the call** it replaces the estimate with real usage and reads the provider's rate-limit headers (Groq, OpenAI-style, OpenRouter, Gemini error bodies) to correct its counters.
+- **When a provider disagrees:** a 429 that names its window ("requests per minute (RPM)", a Gemini per-minute quota) means the provider counts it full. The pool takes that as truth, lets it drain over the window, and (`adaptive`, on by default) lowers that member's effective limit, recovering it over 5 minutes. Providers don't always allow their published rate: on 2026-10-19 one free Groq account sustained about 20 of a published 30 requests per minute.
 - **On failure:**
   - 429: cool down until `retry-after` (or back off), then try the next model.
   - 5xx, network error or first-token timeout: try the next model.

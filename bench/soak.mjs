@@ -33,6 +33,7 @@ if (args[0] === 'report') {
 const REQUESTS = Number(flag('requests', MOCK ? 60 : 250));
 const RPM = Number(flag('rpm', MOCK ? 240 : 40));
 const CONCURRENCY = Number(flag('concurrency', 4));
+const MARGIN = Number(flag('margin', 1));
 const ONLY = flag('contender', undefined);
 const OPENROUTER_MODEL = process.env.OPENROUTER_FREE_MODEL ?? 'google/gemma-4-26b-a4b-it:free';
 
@@ -40,7 +41,7 @@ const OPENROUTER_MODEL = process.env.OPENROUTER_FREE_MODEL ?? 'google/gemma-4-26
 const LIMITS = {
   'groq-oss20b': { rpm: 30, rpd: 1000, provider: 'groq', modelId: 'openai/gpt-oss-20b' },
   'groq-qwen': { rpm: 30, rpd: 1000, provider: 'groq', modelId: 'qwen/qwen3.8-27b' },
-  gemini: { rpm: 5, rpd: 100, provider: 'gemini', modelId: 'gemini-3.5-flash-lite' },
+  gemini: { rpm: 15, rpd: 120, provider: 'gemini', modelId: 'gemini-3.5-flash-lite' },
   openrouter: { rpm: 20, rpd: 50, provider: 'openrouter', modelId: OPENROUTER_MODEL },
 };
 
@@ -58,7 +59,17 @@ function counting(provider, stats) {
   return async (input, init) => {
     const res = await fetch(input, init);
     stats.http[provider] = (stats.http[provider] ?? 0) + 1;
-    if (res.status === 429) stats.http429[provider] = (stats.http429[provider] ?? 0) + 1;
+    (stats.sends[provider] ??= []).push({ t: Date.now(), status: res.status });
+    if (res.status === 429) {
+      stats.http429[provider] = (stats.http429[provider] ?? 0) + 1;
+      // Keep a few error messages: they name the limit that was hit.
+      const samples = (stats.samples429[provider] ??= []);
+      // Organization ids are account identifiers: never keep them in results.
+      if (samples.length < 8) {
+        const text = (await res.clone().text()).replace(/\s+/g, ' ').replace(/\borg_[A-Za-z0-9]+/g, 'org_REDACTED');
+        samples.push(text.slice(0, 400));
+      }
+    }
     return res;
   };
 }
@@ -152,17 +163,18 @@ function contenderModel(name, models) {
     models: [
       { id: 'groq-oss20b', model: models['groq-oss20b'], limits: 'groq:free' },
       { id: 'groq-qwen', model: models['groq-qwen'], limits: 'groq:free' },
-      { id: 'gemini', model: models.gemini, limits: { rpm: 5, rpd: 100, dailyReset: { timeZone: 'America/Los_Angeles' } } },
+      { id: 'gemini', model: models.gemini, limits: 'gemini:free' },
       { id: 'openrouter', model: models.openrouter, limits: { rpm: 20 }, groups: ['openrouter:free-daily'] },
     ],
     strategy: name === 'pool-headroom' ? 'most-headroom' : 'priority',
+    safetyMargin: MARGIN,
     expectedOutputTokens: 128,
   });
   return { model: pool.model(), maxRetries: 0, pool };
 }
 
 async function run(name) {
-  const stats = { http: {}, http429: {} };
+  const stats = { http: {}, http429: {}, samples429: {}, sends: {} };
   const models = MOCK ? await mockModels(stats) : await realModels(stats);
   const { model, maxRetries } = await contenderModel(name, models);
   const results = [];
@@ -216,8 +228,9 @@ async function run(name) {
   await Promise.all(Array.from({ length: CONCURRENCY }, worker));
   const summary = summarise(name, results, stats);
   mkdirSync(RESULTS, { recursive: true });
-  const file = new URL(`${new Date().toISOString().slice(0, 10)}-${MOCK ? 'mock-' : ''}${name}.json`, RESULTS);
-  writeFileSync(file, JSON.stringify({ summary, config: { REQUESTS, RPM, CONCURRENCY, MOCK, OPENROUTER_MODEL }, results }, null, 2));
+  const tag = flag('tag', undefined);
+  const file = new URL(`${new Date().toISOString().slice(0, 10)}-${MOCK ? 'mock-' : ''}${tag ? `${tag}-` : ''}${name}.json`, RESULTS);
+  writeFileSync(file, JSON.stringify({ summary, config: { REQUESTS, RPM, CONCURRENCY, MARGIN, MOCK, OPENROUTER_MODEL }, sends: stats.sends, results }, null, 2));
   console.log(JSON.stringify(summary));
 }
 
@@ -251,6 +264,7 @@ function summarise(name, results, stats) {
     http429: Object.values(stats.http429).reduce((a, b) => a + b, 0),
     httpRequests: Object.values(stats.http).reduce((a, b) => a + b, 0),
     http429ByProvider: stats.http429,
+    samples429: stats.samples429,
     servedByModel: perModel,
     latencyP50: pct(ok.map((r) => r.latencyMs), 50),
     latencyP95: pct(ok.map((r) => r.latencyMs), 95),
