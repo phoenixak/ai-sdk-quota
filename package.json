@@ -3,10 +3,22 @@
   "version": "0.0.0",
   "description": "Quota-aware model pool for the Vercel AI SDK: route each call to a model that still has headroom, before you hit a 429.",
   "license": "MIT",
+  "author": "Ahmed Khaled (https://github.com/phoenixak)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/phoenixak/ai-sdk-quota.git"
+  },
+  "homepage": "https://github.com/phoenixak/ai-sdk-quota#readme",
+  "bugs": {
+    "url": "https://github.com/phoenixak/ai-sdk-quota/issues"
+  },
   "type": "module",
   "sideEffects": false,
   "files": [
-    "dist"
+    "dist",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
   ],
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -88,19 +100,24 @@
     "lint:pkg": "publint && attw --pack . --profile node16",
     "check:terms": "sh scripts/check-private-terms.sh",
     "check:registry": "node scripts/check-registry.mjs",
-    "test:services": "node scripts/test-services.mjs"
+    "test:services": "node scripts/test-services.mjs",
+    "check:size": "node scripts/check-size.mjs"
   },
   "peerDependencies": {
     "@ai-sdk/provider": "^4.0.0"
   },
   "devDependencies": {
+    "@ai-sdk/google": "^4.0.100",
+    "@ai-sdk/groq": "^4.0.65",
     "@ai-sdk/provider": "^4.0.29",
     "@arethetypeswrong/cli": "^0.18.5",
     "@electric-sql/pglite": "^0.5.10",
+    "@openrouter/ai-sdk-provider": "^3.1.0",
     "@types/node": "^26.6.5",
     "@types/pg": "^8.23.1",
     "@vitest/coverage-v8": "^5.0.5",
     "ai": "^7.0.143",
+    "ai-fallback": "^3.0.0",
     "fast-check": "^4.10.2",
     "ioredis": "^6.0.0",
     "pg": "^8.23.1",
@@ -112,5 +129,9 @@
   },
   "allowScripts": {
     "esbuild@0.28.2": true
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   }
 }

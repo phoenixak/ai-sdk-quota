@@ -41,6 +41,16 @@ const result = streamText({
 
 Limits for known free tiers live in `ai-sdk-quota/limits`, each entry with its source and the date it was checked (see [PHASE0.md](PHASE0.md)).
 
+## Benchmark
+
+`bench/soak.mjs` sends the same chat workload through four contenders on real free tiers: a single provider, [`ai-fallback`](https://github.com/remorses/ai-fallback), and this pool with the `priority` and `most-headroom` strategies. It counts the 429s providers actually returned at the HTTP layer. Results: coming with 0.1.0. Run it yourself with your own keys:
+
+```sh
+npm run build
+GROQ_API_KEY=... OPENROUTER_API_KEY=... GEMINI_API_KEY=... node bench/soak.mjs
+node bench/soak.mjs report
+```
+
 ## Stores
 
 `memoryStore()` (the default) keeps state in one process. On serverless every instance has its own copy, so use a shared store there. All of them pass the same test suite, including concurrent reserves from separate connections.
@@ -68,7 +78,7 @@ const store = postgresStore(new pg.Pool({ connectionString: process.env.DATABASE
 | Postgres 17 | p50 2.8 ms (one function call per step, under an advisory lock) |
 | Upstash | two HTTPS requests; add your region's round trip twice |
 
-Keep the store in the same region as your functions. On Upstash's free tier (500K commands a month), one pool call costs about 2–3 commands, so roughly 170k–250k calls a month (estimate; Upstash doesn't document how scripts are counted). Redis Cluster isn't supported yet: every key shares one hash tag.
+**Keep the store in the same region as your app**: every pool call talks to it twice. On Upstash's free tier (500K commands a month), one pool call costs about 2–3 commands, so roughly 170k–250k calls a month (estimate; Upstash doesn't document how scripts are counted). Redis Cluster isn't supported yet: every key shares one hash tag.
 
 ## Budgets
 
@@ -89,6 +99,8 @@ npx ai-sdk-quota probe --provider gemini   # explains where Google shows your li
 ```
 
 The key is read from an environment variable, never from the command line.
+
+The core is 8.6 KB minified and gzipped; each store adds about 4 KB.
 
 ## Policy
 

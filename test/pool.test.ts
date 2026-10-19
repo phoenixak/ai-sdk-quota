@@ -29,6 +29,7 @@ describe('createQuotaPool: generate', () => {
     const pool = createQuotaPool({ models: [{ id: 'a', model: a, limits: { tpm: 8_000 } }], ...s });
     const result = await generateText({ model: pool.model(), prompt: 'hi', maxRetries: 0 });
     expect(result.text).toBe('hello');
+    expect(result.providerMetadata?.['aiSdkQuota']).toEqual({ memberId: 'a', provider: 'groq.chat', modelId: 'openai/gpt-oss-120b' });
     expect(types(s.events)).toEqual(['route:a', 'reconcile:a']);
     expect(s.events[1]).toMatchObject({ actualTokens: 19 });
     const snap = await pool.snapshot();
@@ -374,6 +375,7 @@ describe('createQuotaPool: stream', () => {
     const pool = createQuotaPool({ models: [{ id: 'a', model: a }, { id: 'b', model: b }], ...s });
     const result = streamText({ model: pool.model(), prompt: 'hi', maxRetries: 0 });
     expect(await result.text).toBe('only b');
+    expect((await result.providerMetadata)?.['aiSdkQuota']).toEqual({ memberId: 'b', provider: 'mistral.chat', modelId: 'y' });
     expect(types(s.events)).toEqual(['route:a', 'fail:a', 'cooldown:a', 'route:b', 'reconcile:b']);
   });
 

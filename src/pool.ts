@@ -3,6 +3,7 @@ import {
   type LanguageModelV4,
   type LanguageModelV4CallOptions,
   type LanguageModelV4GenerateResult,
+  type LanguageModelV4StreamPart,
   type LanguageModelV4StreamResult,
   type LanguageModelV4Usage,
 } from '@ai-sdk/provider';
@@ -83,6 +84,11 @@ export interface QuotaPool {
 }
 
 const DAY_MS = 86_400_000;
+
+/** Tells the caller which member answered: `result.providerMetadata.aiSdkQuota.memberId`. */
+function servedBy(m: ResolvedMember) {
+  return { aiSdkQuota: { memberId: m.member.id, provider: m.member.model.provider, modelId: m.member.model.modelId } };
+}
 
 class FirstTokenTimeoutError extends Error {
   override readonly name = 'FirstTokenTimeoutError';
@@ -276,7 +282,8 @@ export function createQuotaPool(options: QuotaPoolOptions): QuotaPool {
           try {
             const result = await m.member.model.doGenerate({ ...opts, abortSignal: attemptCtl.signal });
             await reconcile(m, reservation, estimated, result.usage);
-            return { value: result, headers: result.response?.headers };
+            const value = { ...result, providerMetadata: { ...result.providerMetadata, ...servedBy(m) } };
+            return { value, headers: result.response?.headers };
           } finally {
             attemptCtl.detach();
           }
@@ -298,8 +305,17 @@ export function createQuotaPool(options: QuotaPoolOptions): QuotaPool {
               },
             });
             attemptCtl.clearTimer();
+            const tagged = stream.pipeThrough(
+              new TransformStream<LanguageModelV4StreamPart, LanguageModelV4StreamPart>({
+                transform(part, controller) {
+                  controller.enqueue(
+                    part.type === 'finish' ? { ...part, providerMetadata: { ...part.providerMetadata, ...servedBy(m) } } : part,
+                  );
+                },
+              }),
+            );
             // The caller's signal stays attached so leaving mid-reply still stops the member's stream.
-            return { value: { ...result, stream }, headers: result.response?.headers };
+            return { value: { ...result, stream: tagged }, headers: result.response?.headers };
           } catch (error) {
             attemptCtl.clearTimer();
             attemptCtl.detach();
