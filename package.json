@@ -52,7 +52,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "coverage": "vitest run --coverage",
-    "lint:pkg": "publint && attw --pack .",
+    "lint:pkg": "publint && attw --pack . --profile node16",
     "check:terms": "sh scripts/check-private-terms.sh"
   },
   "peerDependencies": {
@@ -67,7 +67,7 @@
     "fast-check": "^4.10.2",
     "publint": "^0.3.25",
     "tsup": "^9.0.0",
-    "typescript": "^7.0.2",
+    "typescript": "^6.0.3",
     "vitest": "^5.0.5",
     "zod": "^4.6.7"
   },

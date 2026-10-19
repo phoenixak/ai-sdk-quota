@@ -23,6 +23,25 @@ describe('memoryStore internals', () => {
     await store.release({ id: 'nope', placements: [], expiresAt: 0 }, 10);
     expect(await store.usage('x', { rpm: 5 }, 10)).toEqual({ rpm: { used: 0, limit: 5, remaining: 5, resetInMs: 0 } });
   });
+
+  it('adds a late commit to a bucket that already has usage', async () => {
+    const store = memoryStore();
+    const limits = { rpm: 10 };
+    const late = await store.reserve([{ key: 'm', limits, requests: 1, tokens: 0 }], { now: 0, ttlMs: 10 });
+    await store.reserve([{ key: 'm', limits, requests: 1, tokens: 0 }], { now: 20, ttlMs: 1_000 });
+    if (!late.ok) throw new Error('blocked');
+    await store.commit(late.reservation, undefined, 30);
+    expect((await store.usage('m', limits, 30)).rpm?.used).toBe(2);
+  });
+
+  it('records a late commit in the current bucket', async () => {
+    const store = memoryStore();
+    const limits = { tpm: 1_000 };
+    const r = await store.reserve([{ key: 'm', limits, requests: 1, tokens: 300 }], { now: 0, ttlMs: 10 });
+    if (!r.ok) throw new Error('blocked');
+    await store.commit(r.reservation, 120, 5_000);
+    expect((await store.usage('m', limits, 5_000)).tpm).toEqual({ used: 120, limit: 1_000, remaining: 880, resetInMs: 61_000 });
+  });
 });
 
 describe('clocks', () => {

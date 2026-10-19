@@ -11,7 +11,7 @@ describe('estimateInputTokens', () => {
           role: 'user',
           content: [
             { type: 'text', text: 'y'.repeat(7) },
-            { type: 'file', data: 'aGk=', mediaType: 'image/png' },
+            { type: 'file', data: { type: 'data', data: 'aGk=' }, mediaType: 'image/png' },
           ],
         },
         {
@@ -20,7 +20,7 @@ describe('estimateInputTokens', () => {
             { type: 'reasoning', text: 'r'.repeat(7) },
             { type: 'tool-call', toolCallId: '1', toolName: 'abc', input: { q: 1 } },
             { type: 'tool-call', toolCallId: '2', toolName: 'abc', input: '{"q":1}' },
-            { type: 'reasoning-file', data: 'aGk=', mediaType: 'image/png' },
+            { type: 'reasoning-file', data: { type: 'data', data: 'aGk=' }, mediaType: 'image/png' },
             { type: 'custom', kind: 'x.y' },
           ],
         },
@@ -32,6 +32,13 @@ describe('estimateInputTokens', () => {
     };
     // chars: 35 + 7 + 7 + (3+7) + (3+7) + (3+28) = 100 → ceil(100/3.5) = 29
     expect(estimateInputTokens(options)).toBe(29 + 2 * FILE_PART_TOKENS);
+  });
+
+  it('handles tool calls without input', () => {
+    const options: LanguageModelV4CallOptions = {
+      prompt: [{ role: 'assistant', content: [{ type: 'tool-call', toolCallId: '1', toolName: 'abcdefg', input: undefined }] }],
+    };
+    expect(estimateInputTokens(options)).toBe(2);
   });
 
   it('adds tool definitions and the JSON schema', () => {

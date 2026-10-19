@@ -3,7 +3,13 @@ import { describe, expect, it } from 'vitest';
 import { PoolExhaustedError, classifyError } from '../src/errors.js';
 
 const api = (statusCode: number | undefined) =>
-  new APICallError({ message: 'x', url: 'https://example.com', requestBodyValues: {}, statusCode, isRetryable: true });
+  new APICallError({
+    message: 'x',
+    url: 'https://example.com',
+    requestBodyValues: {},
+    ...(statusCode === undefined ? {} : { statusCode }),
+    isRetryable: true,
+  });
 const ctx = { callerAborted: false, timedOut: false };
 
 describe('classifyError', () => {

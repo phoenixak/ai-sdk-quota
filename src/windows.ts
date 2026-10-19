@@ -7,9 +7,10 @@ export function isTokenDimension(dim: Dimension): boolean {
 }
 
 /**
- * Rolling windows are summed over fixed-size buckets. Every bucket that overlaps
- * the window counts in full, so the sum can only over-count: limits are never
- * exceeded, at the cost of freeing capacity up to one bucket late.
+ * Rolling windows are summed over fixed-size buckets. An event anywhere in a bucket
+ * is treated as if it happened at the bucket's end, so a bucket keeps counting until
+ * its latest possible event has left the window. The sum can only over-count: limits
+ * are never exceeded, at the cost of freeing capacity up to one bucket late.
  */
 export type WindowSpec =
   | { kind: 'rolling'; windowMs: number; bucketMs: number }
@@ -41,7 +42,12 @@ export function bucketStart(spec: WindowSpec, now: number): number {
 
 /** Buckets starting at or after this time count toward the window. */
 export function windowStart(spec: WindowSpec, now: number): number {
-  return spec.kind === 'rolling' ? bucketStart(spec, now) - spec.windowMs + spec.bucketMs : dayStart(now, spec.timeZone);
+  return spec.kind === 'rolling' ? bucketStart(spec, now) - spec.windowMs : dayStart(now, spec.timeZone);
+}
+
+/** When a rolling bucket stops counting: its last possible event plus the window. */
+function bucketExpiry(spec: { windowMs: number; bucketMs: number }, start: number): number {
+  return start + spec.bucketMs + spec.windowMs;
 }
 
 export function windowSum(buckets: Iterable<[number, number]>, spec: WindowSpec, now: number): number {
@@ -73,7 +79,7 @@ export function retryAfterMs(
   let freed = 0;
   let i = 0;
   while (freed < excess) freed += live[i++]![1];
-  return live[i - 1]![0] + spec.windowMs - now;
+  return bucketExpiry(spec, live[i - 1]![0]) - now;
 }
 
 /** When the window next frees capacity: the oldest bucket's expiry, or the next local midnight. */
@@ -82,7 +88,7 @@ export function nextResetMs(buckets: Iterable<[number, number]>, spec: WindowSpe
   const from = windowStart(spec, now);
   let oldest = Infinity;
   for (const [start, amount] of buckets) if (start >= from && amount > 0 && start < oldest) oldest = start;
-  return oldest === Infinity ? 0 : oldest + spec.windowMs - now;
+  return oldest === Infinity ? 0 : bucketExpiry(spec, oldest) - now;
 }
 
 // Time zone math with Intl only, so there are no dependencies.

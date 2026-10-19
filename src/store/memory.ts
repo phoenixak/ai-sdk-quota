@@ -51,9 +51,9 @@ export function memoryStore(): QuotaStore {
     for (const start of s.buckets.keys()) if (start < from) s.buckets.delete(start);
   }
 
+  /** Adjusts a bucket of a live reservation; its series always exists. */
   function add(id: string, bucket: number, amount: number) {
-    const s = series.get(id);
-    if (!s) return;
+    const s = series.get(id)!;
     const current = s.buckets.get(bucket);
     // A bucket that was pruned has left the window; adjusting it would count usage twice.
     if (current === undefined) return;

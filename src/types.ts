@@ -63,7 +63,9 @@ export type PoolEvent =
   | { type: 'fail'; memberId: string; kind: 'rate-limit' | 'retryable'; error: unknown }
   | { type: 'cooldown'; memberId: string; untilMs: number }
   | { type: 'exhausted'; retryAfterMs: number | undefined }
-  | { type: 'reconcile'; memberId: string; estimatedTokens: number; actualTokens: number | undefined };
+  | { type: 'reconcile'; memberId: string; estimatedTokens: number; actualTokens: number | undefined }
+  /** Recording a finished stream's usage failed; nothing else can surface it. */
+  | { type: 'store-error'; memberId: string; error: unknown };
 
 export interface PoolMember {
   /** Stable id used for store keys, events and stickiness. */

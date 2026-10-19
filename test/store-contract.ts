@@ -27,9 +27,20 @@ export function describeStoreContract(name: string, makeStore: () => QuotaStore 
       expect(r.ok).toBe(false);
       if (!r.ok) {
         expect(r.blocked).toEqual({ key: 'm:a', dim: 'rpm' });
-        expect(r.retryAfterMs).toBe(59_000);
+        // Each bucket counts as if its calls came at its end, so capacity frees up to 1s late, never early.
+        expect(r.retryAfterMs).toBe(60_000);
       }
-      await reserveOk(store, [charge('m:a', limits)], T0 + 60_000);
+      expect((await store.reserve([charge('m:a', limits)], { now: T0 + 60_999, ttlMs: TTL })).ok).toBe(false);
+      await reserveOk(store, [charge('m:a', limits)], T0 + 61_000);
+    });
+
+    it('never lets a call expire early across a bucket edge (found by the property test)', async () => {
+      const store = await makeStore();
+      const limits = { rpm: 1 };
+      await reserveOk(store, [charge('m:a', limits)], T0 + 17_642);
+      // 59.358s later the first call is still inside the provider's 60s window.
+      expect((await store.reserve([charge('m:a', limits)], { now: T0 + 77_000, ttlMs: TTL })).ok).toBe(false);
+      await reserveOk(store, [charge('m:a', limits)], T0 + 78_000);
     });
 
     it('is all-or-nothing across keys', async () => {
@@ -170,7 +181,7 @@ export function describeStoreContract(name: string, makeStore: () => QuotaStore 
       const limits = { rpm: 3, rpd: 10, dailyReset: { timeZone: 'UTC' } } as const;
       await reserveOk(store, [charge('m:a', limits)]);
       const u = await store.usage('m:a', limits, T0 + 30_000);
-      expect(u.rpm).toEqual({ used: 1, limit: 3, remaining: 2, resetInMs: 30_000 });
+      expect(u.rpm).toEqual({ used: 1, limit: 3, remaining: 2, resetInMs: 31_000 });
       expect(u.rpd).toEqual({ used: 1, limit: 10, remaining: 9, resetInMs: 12 * 3_600_000 - 30_000 });
     });
 

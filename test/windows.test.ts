@@ -33,15 +33,17 @@ describe('windowSpec', () => {
 describe('rolling windows', () => {
   const spec = windowSpec('rpm');
 
-  it('buckets by second and counts the last 60 buckets', () => {
+  it('buckets by second and counts every bucket that may still hold a call from the last 60s', () => {
     expect(bucketStart(spec, 61_500)).toBe(61_000);
-    expect(windowStart(spec, 61_500)).toBe(2_000);
+    expect(windowStart(spec, 61_500)).toBe(1_000);
     const buckets: [number, number][] = [
       [1_000, 5],
       [2_000, 3],
       [61_000, 1],
     ];
-    expect(windowSum(buckets, spec, 61_500)).toBe(4);
+    // A call at 1.999s is still inside (1.5s, 61.5s], so the 1s bucket counts.
+    expect(windowSum(buckets, spec, 61_500)).toBe(9);
+    expect(windowSum(buckets, spec, 62_000)).toBe(4);
   });
 
   it('computes retry-after from the oldest buckets', () => {
@@ -50,10 +52,10 @@ describe('rolling windows', () => {
       [20_000, 3],
     ];
     expect(retryAfterMs(buckets, spec, 30_000, 1, 10)).toBe(0);
-    // limit 5, used 5: need 1 frees when the 10s bucket expires at 70s.
-    expect(retryAfterMs(buckets, spec, 30_000, 1, 5)).toBe(40_000);
-    // need 4 needs both buckets gone: the 20s bucket expires at 80s.
-    expect(retryAfterMs(buckets, spec, 30_000, 4, 5)).toBe(50_000);
+    // limit 5, used 5: need 1 frees when the 10s bucket's last possible call (10.999s) ages out at 71s.
+    expect(retryAfterMs(buckets, spec, 30_000, 1, 5)).toBe(41_000);
+    // need 4 needs both buckets gone: the 20s bucket stops counting at 81s.
+    expect(retryAfterMs(buckets, spec, 30_000, 4, 5)).toBe(51_000);
     expect(retryAfterMs(buckets, spec, 30_000, 6, 5)).toBe(Infinity);
   });
 
@@ -69,7 +71,7 @@ describe('rolling windows', () => {
         spec,
         35_000,
       ),
-    ).toBe(35_000);
+    ).toBe(36_000);
   });
 });
 

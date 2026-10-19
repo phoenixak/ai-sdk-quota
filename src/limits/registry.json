@@ -1,0 +1,61 @@
+{
+  "tiers": {
+    "groq:free": {
+      "source": "https://console.groq.com/docs/rate-limits",
+      "verifiedAt": "2026-10-19",
+      "verified": true,
+      "note": "Free plan, per organization. Cached tokens don't count.",
+      "models": {
+        "openai/gpt-oss-120b": { "rpm": 30, "rpd": 1000, "tpm": 8000, "tpd": 200000 },
+        "openai/gpt-oss-20b": { "rpm": 30, "rpd": 1000, "tpm": 8000, "tpd": 200000 },
+        "openai/gpt-oss-safeguard-20b": { "rpm": 3, "rpd": 1000, "tpm": 2000, "tpd": 200000 },
+        "qwen/qwen3.8-27b": { "rpm": 30, "rpd": 1000, "tpm": 8000, "tpd": 200000 },
+        "meta-llama/llama-prompt-guard-2-22m": { "rpm": 30, "rpd": 14400, "tpm": 15000, "tpd": 500000 },
+        "meta-llama/llama-prompt-guard-2-86m": { "rpm": 30, "rpd": 14400, "tpm": 15000, "tpd": 500000 }
+      }
+    },
+    "openrouter:free": {
+      "source": "https://openrouter.ai/docs/api/reference/limits",
+      "verifiedAt": "2026-10-19",
+      "verified": true,
+      "note": "Any model id ending in ':free'. 20 RPM per model; the daily cap is shared across all free models (group openrouter:free-daily).",
+      "modelSuffix": ":free",
+      "defaultModel": { "rpm": 20 },
+      "groups": ["openrouter:free-daily"]
+    },
+    "cerebras:free": {
+      "source": "https://inference-docs.cerebras.ai/support/rate-limits",
+      "verifiedAt": "2026-10-19",
+      "verified": true,
+      "note": "Free trial; activating it needs a verified payment method. TPM is the total-token limit; the 1M tokens/hour limit is not modelled.",
+      "models": {
+        "gpt-oss-120b": { "rpm": 5, "tpm": 90000, "tpd": 1000000 },
+        "qwen-3.8-27b": { "rpm": 5, "tpm": 90000, "tpd": 1000000 }
+      }
+    },
+    "gemini:free": {
+      "source": "https://ai.google.dev/gemini-api/docs/rate-limits",
+      "verifiedAt": "2026-10-19",
+      "verified": false,
+      "note": "Google publishes no numbers; real limits are shown per project in AI Studio. These are conservative defaults. Limits are per project, not per key. RPD resets at midnight Pacific.",
+      "dailyReset": { "timeZone": "America/Los_Angeles" },
+      "defaultModel": { "rpm": 5, "rpd": 100, "tpm": 250000 }
+    },
+    "mistral:free": {
+      "source": "https://docs.mistral.ai/admin/billing-usage/usage-limits",
+      "verifiedAt": "2026-10-19",
+      "verified": false,
+      "note": "Free mode limits are per model and shown only in Admin panel > API > Limits. Conservative defaults.",
+      "defaultModel": { "rps": 1, "tpm": 100000 }
+    }
+  },
+  "groups": {
+    "openrouter:free-daily": {
+      "source": "https://openrouter.ai/docs/api/reference/limits",
+      "verifiedAt": "2026-10-19",
+      "verified": true,
+      "note": "50 requests per UTC day across all ':free' models with under 10 credits bought; 1,000 with 10 or more. Override with createQuotaPool({ groups }).",
+      "limits": { "rpd": 50, "dailyReset": { "timeZone": "UTC" } }
+    }
+  }
+}
