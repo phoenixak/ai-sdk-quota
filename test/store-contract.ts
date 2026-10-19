@@ -277,6 +277,46 @@ export function describeStoreContract(
       expect(u.tpd?.used).toBe(30);
     });
 
+    it('adapts once per burst of 429s and recovers linearly', async () => {
+      const store = await makeStore();
+      const o = { step: 0.75, min: 0.25, recoverMs: 100_000, debounceMs: 10_000 };
+      expect(await store.getAdapted(['a|rpm'], T0, o.recoverMs)).toEqual({});
+      expect(await store.adapt('a|rpm', T0, o)).toEqual({ factor: 0.75, changed: true });
+      // Another 429 from the same burst (any instance) changes nothing.
+      const again = await store.adapt('a|rpm', T0 + 4_000, o);
+      expect(again.changed).toBe(false);
+      expect(again.factor).toBeCloseTo(0.76, 6);
+      // After the debounce: lowered from the partly recovered value (0.75 + 0.2 * 0.25 = 0.8).
+      const later = await store.adapt('a|rpm', T0 + 20_000, o);
+      expect(later.changed).toBe(true);
+      expect(later.factor).toBeCloseTo(0.6, 6);
+      const half = await store.getAdapted(['a|rpm', 'b|rpm'], T0 + 70_000, o.recoverMs);
+      expect(Object.keys(half)).toEqual(['a|rpm']);
+      expect(half['a|rpm']).toBeCloseTo(0.8, 6);
+      expect(await store.getAdapted(['a|rpm'], T0 + 120_000, o.recoverMs)).toEqual({});
+      expect(await store.getAdapted([], T0, o.recoverMs)).toEqual({});
+      // Never below min.
+      let f = 1;
+      for (let i = 0; i < 10; i++) f = (await store.adapt('c|rpm', T0 + i * 20_000, { ...o, recoverMs: 1e12 })).factor;
+      expect(f).toBe(0.25);
+    });
+
+    if (options.shared) {
+      it('shares adaptation across instances: one burst lowers the limit once for everyone', async () => {
+        const prefix = `t${Math.random().toString(36).slice(2, 10)}`;
+        const [a, b] = await Promise.all([make(prefix), make(prefix)]);
+        const o = { step: 0.75, min: 0.25, recoverMs: 100_000, debounceMs: 10_000 };
+        const results = await Promise.all([a!.adapt('m|rpm', T0, o), b!.adapt('m|rpm', T0 + 500, o)]);
+        expect(results.filter((r) => r.changed)).toHaveLength(1);
+        // Whichever instance won the race set 0.75 at its own time (T0 or T0 + 500).
+        const seen = (await b!.getAdapted(['m|rpm'], T0 + 1_000, o.recoverMs))['m|rpm']!;
+        expect(seen).toBeGreaterThanOrEqual(0.75125 - 1e-9);
+        expect(seen).toBeLessThanOrEqual(0.7525 + 1e-9);
+        // A reader whose clock is behind the record never sees it below the stored factor.
+        expect((await a!.getAdapted(['m|rpm'], T0 - 5_000, o.recoverMs))['m|rpm']).toBe(0.75);
+      });
+    }
+
     it('stores sticky members with a TTL', async () => {
       const store = await makeStore();
       expect(await store.getSticky('conv', T0)).toBeUndefined();

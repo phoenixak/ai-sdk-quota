@@ -77,7 +77,7 @@ describe('groqHeaders', () => {
       { status: 429, headers: { 'retry-after': '2', 'x-ratelimit-remaining-tokens': '0', 'x-ratelimit-reset-tokens': 'x' } },
       NOW,
     );
-    expect(reading).toEqual({ truths: [{ dim: 'tpm', remaining: 0, resetInMs: 60_000 }], retryAfterMs: 2_000 });
+    expect(reading).toEqual({ truths: [{ dim: 'tpm', remaining: 0, resetInMs: 60_000 }], retryAfterMs: 2_000, limited: ['tpm'] });
     expect(groqHeaders({}, NOW)).toEqual({ truths: [] });
     expect(groqHeaders({ headers: { 'x-ratelimit-remaining-requests': '' } }, NOW)).toEqual({ truths: [] });
     expect(groqHeaders({ headers: { 'x-ratelimit-remaining-requests': 'abc' } }, NOW)).toEqual({ truths: [] });
@@ -134,7 +134,72 @@ describe('named windows in 429 bodies', () => {
   });
 });
 
+describe('429 sources, most reliable first', () => {
+  const rpmMessage = JSON.stringify({ error: { message: 'Rate limit reached on requests per minute (RPM). Please try again in 1m2.5s.' } });
+
+  it('wait: retry-after-ms, then retry-after, then the reset header, then the message', () => {
+    const base = {
+      status: 429,
+      body: rpmMessage,
+      headers: { 'x-ratelimit-remaining-tokens': '0', 'x-ratelimit-reset-tokens': '7.5s' } as Record<string, string>,
+    };
+    expect(openaiHeaders({ ...base, headers: { ...base.headers, 'retry-after-ms': '250', 'retry-after': '3' } }, NOW).retryAfterMs).toBe(250);
+    expect(openaiHeaders({ ...base, headers: { ...base.headers, 'retry-after': '3' } }, NOW).retryAfterMs).toBe(3_000);
+    expect(openaiHeaders(base, NOW).retryAfterMs).toBe(7_500);
+    expect(openaiHeaders({ ...base, headers: {} }, NOW).retryAfterMs).toBe(62_500);
+    expect(openaiHeaders({ status: 429, body: 'slow down' }, NOW).retryAfterMs).toBeUndefined();
+  });
+
+  it('takes the longest reset when several windows are exhausted', () => {
+    const reading = groqHeaders(
+      {
+        status: 429,
+        headers: {
+          'x-ratelimit-remaining-requests': '0',
+          'x-ratelimit-reset-requests': '2m0s',
+          'x-ratelimit-remaining-tokens': '0',
+          'x-ratelimit-reset-tokens': '5s',
+        },
+      },
+      NOW,
+    );
+    expect(reading).toMatchObject({ retryAfterMs: 120_000, limited: ['rpd', 'tpm'] });
+    // An exhausted window without a reset header still counts as exhausted.
+    expect(groqHeaders({ status: 429, headers: { 'x-ratelimit-remaining-requests': '0' } }, NOW)).toMatchObject({ limited: ['rpd'] });
+  });
+
+  it('window: an exhausted header beats the message; the message is the fallback', () => {
+    // Groq's RPM isn't in its headers (they describe RPD and TPM), so RPM comes from the message.
+    expect(groqHeaders({ status: 429, body: rpmMessage, headers: { 'x-ratelimit-remaining-requests': '850' } }, NOW).limited).toEqual(['rpm']);
+    expect(groqHeaders({ status: 429, body: rpmMessage, headers: { 'x-ratelimit-remaining-tokens': '0' } }, NOW).limited).toEqual(['tpm']);
+  });
+});
+
 describe('openrouterHeaders', () => {
+  it('treats upstream congestion as the model being busy, not as your quota', () => {
+    const upstream = JSON.stringify({
+      error: { message: 'google/gemma:free is temporarily rate-limited upstream.', code: 429, metadata: { provider_name: 'Example' } },
+    });
+    expect(openrouterHeaders({ status: 429, body: upstream }, NOW)).toEqual({ truths: [], upstream: true });
+    expect(openrouterHeaders({ status: 429, body: upstream, headers: { 'retry-after': '20' } }, NOW)).toEqual({
+      truths: [],
+      upstream: true,
+      retryAfterMs: 20_000,
+    });
+    expect(openrouterHeaders({ status: 429, body: 'model is temporarily rate-limited upstream' }, NOW).upstream).toBe(true);
+    expect(openrouterHeaders({ status: 429, body: JSON.stringify({ error: { message: 'Rate limit exceeded' } }) }, NOW).upstream).toBeUndefined();
+  });
+
+  it('maps platform 429s to the per-minute or the shared daily window by their reset', () => {
+    const platform = (resetIn: number) =>
+      openrouterHeaders(
+        { status: 429, headers: { 'X-RateLimit-Limit': '50', 'X-RateLimit-Remaining': '0', 'X-RateLimit-Reset': String(NOW + resetIn) } },
+        NOW,
+      );
+    expect(platform(5 * 3_600_000)).toEqual({ truths: [], retryAfterMs: 5 * 3_600_000, limited: ['rpd'] });
+    expect(platform(30_000)).toEqual({ truths: [], retryAfterMs: 30_000, limited: ['rpm'] });
+  });
+
   it('prefers Retry-After, then the reset timestamp', () => {
     expect(openrouterHeaders({ status: 429, headers: { 'Retry-After': '10', 'X-RateLimit-Reset': String(NOW + 99_000) } }, NOW)).toEqual({
       truths: [],

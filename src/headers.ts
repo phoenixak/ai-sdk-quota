@@ -70,43 +70,94 @@ export function namedWindows(body: string | undefined): Dimension[] {
   return [...new Set([...body.matchAll(NAMED_WINDOW)].map((m) => m[1]!.toLowerCase() as Dimension))];
 }
 
-function withLimited(reading: HeaderReading, input: HeaderInput): HeaderReading {
-  const limited = input.status === 429 ? namedWindows(input.body) : [];
-  return limited.length ? { ...reading, limited } : reading;
+const RETRY_IN = /try again in ((?:\d+(?:\.\d+)?(?:ms|h|m|s))+)/i;
+
+/**
+ * Reads a 429 from OpenAI-style headers, most reliable source first:
+ * - wait: `retry-after-ms`, then `retry-after`, then the `x-ratelimit-reset-*` header of
+ *   an exhausted window, then "try again in 2s" in the message;
+ * - window: an `x-ratelimit-remaining-*` header at 0, then a window named in the message.
+ * Messages are a last resort: providers reword them.
+ */
+function rateLimited(
+  input: HeaderInput,
+  now: number,
+  truths: ProviderTruth[],
+  windows: { requests: Dimension; tokens: Dimension },
+): HeaderReading {
+  const ms = num(header(input, 'retry-after-ms'));
+  let retryAfterMs = ms ?? parseRetryAfter(header(input, 'retry-after'), now);
+  if (input.status !== 429) return retryAfterMs === undefined ? { truths } : { truths, retryAfterMs };
+  const exhausted: Dimension[] = [];
+  let resetMs: number | undefined;
+  for (const kind of ['requests', 'tokens'] as const) {
+    if (num(header(input, `x-ratelimit-remaining-${kind}`)) !== 0) continue;
+    exhausted.push(windows[kind]);
+    const reset = parseDuration(header(input, `x-ratelimit-reset-${kind}`));
+    if (reset !== undefined) resetMs = Math.max(resetMs ?? 0, reset);
+  }
+  retryAfterMs ??= resetMs;
+  if (retryAfterMs === undefined) {
+    const match = RETRY_IN.exec(input.body ?? '');
+    if (match) retryAfterMs = parseDuration(match[1]);
+  }
+  const limited = exhausted.length ? exhausted : namedWindows(input.body);
+  return {
+    truths,
+    ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+    ...(limited.length ? { limited } : {}),
+  };
 }
 
 /** Groq: the `requests` headers describe the daily limit, the `tokens` headers the per-minute limit. */
 export const groqHeaders: HeaderAdapter = (input, now) =>
-  withLimited(
-    withRetryAfter(
-      { truths: [...truth(input, 'rpd', 'requests', 86_400_000), ...truth(input, 'tpm', 'tokens', 60_000)] },
-      input,
-      now,
-    ),
-    input,
-  );
+  rateLimited(input, now, [...truth(input, 'rpd', 'requests', 86_400_000), ...truth(input, 'tpm', 'tokens', 60_000)], {
+    requests: 'rpd',
+    tokens: 'tpm',
+  });
 
 /** OpenAI-style headers: `requests` and `tokens` both describe per-minute limits. */
-export const openaiHeaders: HeaderAdapter = (input, now) => {
-  const reading = withRetryAfter(
-    { truths: [...truth(input, 'rpm', 'requests', 60_000), ...truth(input, 'tpm', 'tokens', 60_000)] },
-    input,
-    now,
-  );
-  const ms = num(header(input, 'retry-after-ms'));
-  return withLimited(ms === undefined ? reading : { ...reading, retryAfterMs: ms }, input);
-};
+export const openaiHeaders: HeaderAdapter = (input, now) =>
+  rateLimited(input, now, [...truth(input, 'rpm', 'requests', 60_000), ...truth(input, 'tpm', 'tokens', 60_000)], {
+    requests: 'rpm',
+    tokens: 'tpm',
+  });
 
 /**
- * OpenRouter sends rate-limit headers only on a 429: `X-RateLimit-Reset` is an epoch
- * timestamp in ms for whichever limit was hit, and `Retry-After` may be present.
+ * OpenRouter. Two kinds of 429:
+ * - Upstream: the model's host is busy ("temporarily rate-limited upstream", with
+ *   `error.metadata.provider_name`). Not your quota: cool that model down briefly only.
+ * - Platform: your account's limit, with `X-RateLimit-Limit/Remaining/Reset` (`Reset`
+ *   is an epoch ms timestamp). A reset more than a minute away is the daily cap, which
+ *   is shared by all free models; otherwise the per-minute limit.
  */
 export const openrouterHeaders: HeaderAdapter = (input, now) => {
-  const reading = withRetryAfter({ truths: [] }, input, now);
-  if (reading.retryAfterMs !== undefined) return reading;
+  const retryAfter = parseRetryAfter(header(input, 'retry-after'), now);
+  if (input.status === 429 && isUpstream(input.body)) {
+    return { truths: [], upstream: true, ...(retryAfter === undefined ? {} : { retryAfterMs: retryAfter }) };
+  }
   const reset = num(header(input, 'x-ratelimit-reset'));
-  return reset === undefined ? reading : { ...reading, retryAfterMs: Math.max(0, reset - now) };
+  const untilReset = reset === undefined ? undefined : Math.max(0, reset - now);
+  const retryAfterMs = retryAfter ?? untilReset;
+  const platform = input.status === 429 && header(input, 'x-ratelimit-limit') !== undefined;
+  const limited: Dimension[] = platform && untilReset !== undefined ? [untilReset > 60_000 ? 'rpd' : 'rpm'] : [];
+  return {
+    truths: [],
+    ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+    ...(limited.length ? { limited } : {}),
+  };
 };
+
+function isUpstream(body: string | undefined): boolean {
+  if (!body) return false;
+  try {
+    const parsed = JSON.parse(body) as { error?: { metadata?: { provider_name?: unknown } } };
+    if (parsed?.error?.metadata?.provider_name !== undefined) return true;
+  } catch {
+    // Not JSON: check the text.
+  }
+  return /rate-limited upstream/i.test(body);
+}
 
 /**
  * Gemini reports quota errors in the 429 body: a `google.rpc.RetryInfo` detail with

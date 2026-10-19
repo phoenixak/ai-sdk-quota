@@ -50,6 +50,8 @@ export interface HeaderReading {
   dailyExhausted?: boolean;
   /** Windows the provider named in a 429 ("on requests per minute (RPM)", a per-day quota, ...). */
   limited?: Dimension[];
+  /** The 429 came from the model's host being busy, not from your quota. */
+  upstream?: boolean;
 }
 
 export interface HeaderInput {

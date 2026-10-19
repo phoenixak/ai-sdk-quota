@@ -1,5 +1,6 @@
 import type { Dimension, Limits } from '../types.js';
 import { DIMENSIONS, bucketStart, isTokenDimension, nextResetMs, windowSpec, windowStart } from '../windows.js';
+import { type AdaptOptions, type Adapted, recovered } from './adaptive.js';
 import { floorAt } from './floor.js';
 import type { Placement, QuotaStore, Reservation, Usage } from './types.js';
 
@@ -61,6 +62,10 @@ export interface StoreBackend {
   getCooldown(memberId: string): Promise<number | undefined>;
   setSticky(key: string, memberId: string, until: number, ttlMs: number): Promise<void>;
   getSticky(key: string): Promise<{ memberId: string; until: number } | undefined>;
+  /** Applies `lowered()` from adaptive.ts atomically. */
+  adapt(key: string, now: number, options: AdaptOptions): Promise<{ factor: number; changed: boolean }>;
+  /** Raw records (not recovered) for these keys. */
+  getAdapted(keys: string[]): Promise<(Adapted | undefined)[]>;
 }
 
 const seriesName = (key: string, dim: Dimension) => `${key}|${dim}`;
@@ -202,6 +207,18 @@ export function createScriptedStore(backend: StoreBackend): QuotaStore {
     async getSticky(key, now) {
       const s = await backend.getSticky(key);
       return s && s.until > now ? s.memberId : undefined;
+    },
+
+    adapt: (key, now, options) => backend.adapt(key, now, options),
+
+    async getAdapted(keys, now, recoverMs) {
+      const records = keys.length ? await backend.getAdapted(keys) : [];
+      const out: Record<string, number> = {};
+      keys.forEach((key, i) => {
+        const factor = recovered(records[i], now, recoverMs);
+        if (factor < 1) out[key] = factor;
+      });
+      return out;
     },
   };
 }

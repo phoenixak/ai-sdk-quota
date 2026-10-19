@@ -224,6 +224,34 @@ if op == 'st-get' then
   return redis.call('GET', p .. 'k:' .. ARGV[4])
 end
 
+-- Adaptive limits (see adaptive.ts). Factors are returned as strings: integer replies would truncate them.
+if op == 'ad-set' then
+  local k = p .. 'a:' .. ARGV[4]
+  local step, minF, recover, debounce = tonumber(ARGV[5]), tonumber(ARGV[6]), tonumber(ARGV[7]), tonumber(ARGV[8])
+  local v = redis.call('HMGET', k, 'f', 'at')
+  local cur = 1
+  if v[1] then
+    local f0, at = tonumber(v[1]), tonumber(v[2])
+    cur = math.min(1, f0 + math.max(0, now - at) / recover * (1 - f0))
+    if now - at < debounce then return { tostring(cur), 0 } end
+  end
+  local nf = math.max(minF, cur * step)
+  redis.call('HSET', k, 'f', tostring(nf), 'at', string.format('%d', now))
+  redis.call('PEXPIRE', k, recover + 60000)
+  return { tostring(nf), 1 }
+end
+
+if op == 'ad-get' then
+  local n = tonumber(ARGV[4])
+  local out = {}
+  for i = 1, n do
+    local v = redis.call('HMGET', p .. 'a:' .. ARGV[4 + i], 'f', 'at')
+    out[#out + 1] = v[1] or ''
+    out[#out + 1] = v[2] or ''
+  end
+  return out
+end
+
 return redis.error_reply('ai-sdk-quota: unknown op ' .. tostring(op))
 `;
 
@@ -303,6 +331,22 @@ export function redisBackend(run: RunScript, prefix: string): StoreBackend {
 
     async setSticky(key, memberId, until, ttlMs) {
       await call('st-set', 0, [key, memberId, int(until), int(ttlMs)]);
+    },
+
+    async adapt(key, now, o) {
+      const reply = (await call('ad-set', now, [key, String(o.step), String(o.min), int(o.recoverMs), int(o.debounceMs)])) as [
+        string,
+        number,
+      ];
+      return { factor: Number(reply[0]), changed: Number(reply[1]) === 1 };
+    },
+
+    async getAdapted(keys) {
+      const reply = (await call('ad-get', 0, [String(keys.length), ...keys])) as string[];
+      return keys.map((_, i) => {
+        const factor = reply[2 * i];
+        return factor ? { factor: Number(factor), at: Number(reply[2 * i + 1]) } : undefined;
+      });
     },
 
     async getSticky(key) {

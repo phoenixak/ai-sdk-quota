@@ -53,8 +53,9 @@ describe('createQuotaPool: generate', () => {
     });
     const result = await generateText({ model: pool.model(), prompt: 'hi', maxRetries: 0 });
     expect(result.text).toBe('from b');
-    expect(types(s.events)).toEqual(['route:a', 'fail:a', 'cooldown:a', 'route:b', 'reconcile:b']);
-    expect(s.events[2]).toMatchObject({ untilMs: T0 + 7_000 });
+    // remaining-tokens: 0 names the TPM window, so a's TPM limit adapts too.
+    expect(types(s.events)).toEqual(['route:a', 'fail:a', 'adapt:a', 'cooldown:a', 'route:b', 'reconcile:b']);
+    expect(s.events[3]).toMatchObject({ untilMs: T0 + 7_000 });
     const snap = await pool.snapshot();
     // The 429 was released, but the provider's truth (0 tokens left) was applied.
     expect(snap.members[0]).toMatchObject({ cooldownUntil: T0 + 7_000, usage: { tpm: { used: 8_000 } } });
@@ -180,6 +181,86 @@ describe('createQuotaPool: generate', () => {
     s.clock.advance(2_034);
     const error = (await failure(pool.model().doGenerate({ prompt: userPrompt('x') }))) as PoolExhaustedError;
     expect(error.failures[0]!.reason).toBe('rate-limit');
+  });
+
+  it('treats an OpenRouter "busy upstream" 429 as the model being busy, not as your quota', async () => {
+    const s = setup();
+    const busy = JSON.stringify({ error: { message: 'x:free is temporarily rate-limited upstream.', metadata: { provider_name: 'Example' } } });
+    const a = mock('openrouter.chat', 'x:free', {
+      doGenerate: async () => {
+        throw apiError(429, { body: busy });
+      },
+    });
+    const b = mock('openrouter.chat', 'y:free', { doGenerate: generated('b') });
+    const pool = createQuotaPool({
+      models: [
+        { id: 'a', model: a, limits: 'openrouter:free' },
+        { id: 'b', model: b, limits: 'openrouter:free' },
+      ],
+      ...s,
+    });
+    const r = await pool.model().doGenerate({ prompt: userPrompt('x') });
+    expect(r.content).toEqual([{ type: 'text', text: 'b' }]);
+    expect(s.events.some((e) => e.type === 'adapt')).toBe(false);
+    expect(s.events.find((e) => e.type === 'cooldown')).toMatchObject({ memberId: 'a', untilMs: T0 + 15_000 });
+    // The busy model's request was released: only b's call counts toward the shared daily cap.
+    expect((await pool.snapshot()).groups[0]!.usage.rpd?.used).toBe(1);
+    const error = (await failure(createQuotaPool({ models: [{ id: 'a', model: a, limits: 'openrouter:free' }], ...setup() }).model().doGenerate({ prompt: userPrompt('x') }))) as PoolExhaustedError;
+    expect(error.failures).toEqual([{ memberId: 'a', reason: 'upstream-busy' }]);
+  });
+
+  it('marks the shared daily group full when OpenRouter reports the account cap', async () => {
+    const s = setup();
+    const capped = mock('openrouter.chat', 'x:free', {
+      doGenerate: async () => {
+        throw apiError(429, {
+          headers: { 'X-RateLimit-Limit': '50', 'X-RateLimit-Remaining': '0', 'X-RateLimit-Reset': String(Date.UTC(2026, 9, 20)) },
+          body: JSON.stringify({ error: { message: 'Rate limit exceeded: free-models-per-day' } }),
+        });
+      },
+    });
+    const other = mock('openrouter.chat', 'y:free', { doGenerate: generated('never') });
+    const pool = createQuotaPool({
+      models: [
+        { id: 'a', model: capped, limits: 'openrouter:free' },
+        { id: 'b', model: other, limits: 'openrouter:free' },
+      ],
+      ...s,
+    });
+    const error = (await failure(pool.model().doGenerate({ prompt: userPrompt('x') }))) as PoolExhaustedError;
+    expect(error.failures).toEqual([
+      { memberId: 'a', reason: 'rate-limit', retryAfterMs: Date.UTC(2026, 9, 20) - T0 },
+      { memberId: 'b', reason: 'quota', retryAfterMs: Date.UTC(2026, 9, 20) - T0 },
+    ]);
+    expect(other.doGenerateCalls).toHaveLength(0);
+    expect((await pool.snapshot()).groups[0]!.usage.rpd).toMatchObject({ used: 50, remaining: 0 });
+  });
+
+  const store429 = async (p: ReturnType<typeof createQuotaPool>) =>
+    expect(p.model().doGenerate({ prompt: userPrompt('x') })).rejects.toBeInstanceOf(PoolExhaustedError);
+
+  it('shares adaptive limits between pools on one store (instances)', async () => {
+    const s = setup();
+    const body = 'Rate limit reached on requests per minute (RPM)';
+    const failing = mock('groq.chat', 'x', {
+      doGenerate: async () => {
+        throw apiError(429, { headers: { 'retry-after': '1' }, body });
+      },
+    });
+    const healthy = mock('groq.chat', 'x', { doGenerate: generated('ok') });
+    const one = createQuotaPool({ models: [{ id: 'a', model: failing, limits: { rpm: 40 } }], ...s });
+    const two = createQuotaPool({ models: [{ id: 'a', model: healthy, limits: { rpm: 40 } }], clock: s.clock, store: s.store });
+    await store429(one);
+    // A second 429 from the same burst (3 s later, inside the 10 s debounce) doesn't lower it again.
+    s.clock.advance(3_000);
+    await store429(one);
+    expect(failing.doGenerateCalls).toHaveLength(2);
+    expect(s.events.filter((e) => e.type === 'adapt')).toHaveLength(1);
+    // After the drained window, the other instance enforces the shared adapted limit:
+    // floor(40 * (0.75 + 65/300 * 0.25)) = 32.
+    s.clock.advance(62_000);
+    for (let i = 0; i < 32; i++) await two.model().doGenerate({ prompt: userPrompt('x') });
+    await expect(two.model().doGenerate({ prompt: userPrompt('x') })).rejects.toBeInstanceOf(PoolExhaustedError);
   });
 
   it('ignores a named window the member has no limit for', async () => {

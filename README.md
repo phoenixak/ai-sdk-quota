@@ -31,7 +31,8 @@ const result = streamText({
 
 - **Before each call** it estimates the tokens (prompt length, plus a running average of each model's real replies) and **atomically reserves** capacity in every window that applies: per minute, per day, per second, tokens per minute and per day, for the model, any shared group (e.g. OpenRouter's daily cap across all `:free` models) and an optional budget key (a user or tenant).
 - **After the call** it replaces the estimate with real usage and reads the provider's rate-limit headers (Groq, OpenAI-style, OpenRouter, Gemini error bodies) to correct its counters.
-- **When a provider disagrees:** a 429 that names its window ("requests per minute (RPM)", a Gemini per-minute quota) means the provider counts it full. The pool takes that as truth, lets it drain over the window, and (`adaptive`, on by default) lowers that member's effective limit, recovering it over 5 minutes. Providers don't always allow their published rate: on 2026-10-19 one free Groq account sustained about 20 of a published 30 requests per minute.
+- **When a provider disagrees:** a 429 that names its window ("requests per minute (RPM)", a Gemini per-minute quota) means the provider counts it full. The pool takes that as truth, lets it drain over the window, and (`adaptive`, on by default) lowers that member's effective limit, recovering it over 5 minutes. Providers don't always allow their published rate: on 2026-10-19 one free Groq account sustained about 20 of a published 30 requests per minute. The adapted limit lives in the store, so with a shared store one burst of 429s lowers it once for every instance. Turn it off with `adaptive: false`; reserve a fixed share of every limit with `safetyMargin: 0.9`.
+- **Busy models vs. your quota:** OpenRouter's "temporarily rate-limited upstream" 429s mean the free model's host is busy, so the pool pauses that model briefly and doesn't count it against your shared daily cap.
 - **On failure:**
   - 429: cool down until `retry-after` (or back off), then try the next model.
   - 5xx, network error or first-token timeout: try the next model.
@@ -44,7 +45,9 @@ Limits for known free tiers live in `ai-sdk-quota/limits`, each entry with its s
 
 ## Benchmark
 
-`bench/soak.mjs` sends the same chat workload through four contenders on real free tiers: a single provider, [`ai-fallback`](https://github.com/remorses/ai-fallback), and this pool with the `priority` and `most-headroom` strategies. It counts the 429s providers actually returned at the HTTP layer. Results: coming with 0.1.0. Run it yourself with your own keys:
+`bench/soak.mjs` compares this pool with [`ai-fallback`](https://github.com/remorses/ai-fallback) on real free tiers (Groq, Gemini, OpenRouter). To keep it fair, the two take turns in blocks (A B B A A B B A …) inside the same time window, with the same models and the same seeded request mix, so both face the same quota state. It counts the 429s providers actually returned at the HTTP layer, records which limit each one names, and reports per-block ranges. The raw results (account ids redacted) are committed next to the table so anyone can check them.
+
+Results: coming with 0.1.0. Run it with your own keys:
 
 ```sh
 npm run build
@@ -101,7 +104,7 @@ npx ai-sdk-quota probe --provider gemini   # explains where Google shows your li
 
 The key is read from an environment variable, never from the command line.
 
-The core is 8.6 KB minified and gzipped; each store adds about 4 KB.
+The core is about 10 KB minified and gzipped (9.2 KB for a typical `createQuotaPool` + `memoryStore` import); each store adds about 5 KB.
 
 ## Policy
 

@@ -85,6 +85,12 @@ declare
   v_floor_added bigint;
   v_floor_now numeric;
   v_room bigint;
+  v_text text;
+  v_f0 float8;
+  v_at bigint;
+  v_cur float8;
+  v_nf float8;
+  v_key text;
   v_need bigint;
   v_limit bigint;
   v_wait bigint;
@@ -263,6 +269,36 @@ begin
     return coalesce(v_out, 'null'::jsonb);
   end if;
 
+  -- Adaptive limits (see adaptive.ts): value is 'factor|at'.
+  if v_op = 'ad-set' then
+    v_key := 'a:' || (p->>'key');
+    select k.value into v_text from ${s}.quota_kv k where k.key = v_key;
+    v_cur := 1;
+    if v_text is not null then
+      v_f0 := split_part(v_text, '|', 1)::float8;
+      v_at := split_part(v_text, '|', 2)::bigint;
+      v_cur := least(1, v_f0 + greatest(0, v_now - v_at)::float8 / (p->>'recoverMs')::float8 * (1 - v_f0));
+      if v_now - v_at < (p->>'debounceMs')::bigint then
+        return jsonb_build_object('factor', v_cur, 'changed', false);
+      end if;
+    end if;
+    v_nf := greatest((p->>'min')::float8, v_cur * (p->>'step')::float8);
+    insert into ${s}.quota_kv (key, value, until)
+      values (v_key, v_nf::text || '|' || v_now::text, v_now + (p->>'recoverMs')::bigint + 60000)
+      on conflict (key) do update set value = excluded.value, until = excluded.until;
+    return jsonb_build_object('factor', v_nf, 'changed', true);
+
+  elsif v_op = 'ad-get' then
+    v_out := '[]'::jsonb;
+    for v_key in select jsonb_array_elements_text(p->'keys') loop
+      v_text := null;
+      select k.value into v_text from ${s}.quota_kv k where k.key = 'a:' || v_key;
+      v_out := v_out || jsonb_build_array(case when v_text is null then 'null'::jsonb else jsonb_build_object(
+        'factor', split_part(v_text, '|', 1)::float8, 'at', split_part(v_text, '|', 2)::bigint) end);
+    end loop;
+    return v_out;
+  end if;
+
   raise exception 'ai-sdk-quota: unknown op %', v_op;
 end;
 $fn$;
@@ -339,6 +375,14 @@ export function postgresStore(db: PgQueryable, options: PostgresStoreOptions = {
     },
     async setSticky(key, memberId, until) {
       await op({ op: 'st-set', now: 0, key: ns(key), value: memberId, until });
+    },
+    async adapt(key, now, o) {
+      const r = (await op({ op: 'ad-set', now, key: ns(key), ...o })) as { factor: number; changed: boolean };
+      return { factor: Number(r.factor), changed: r.changed === true };
+    },
+    async getAdapted(keys) {
+      const rows = (await op({ op: 'ad-get', now: 0, keys: keys.map(ns) })) as ({ factor: number; at: number } | null)[];
+      return rows.map((r) => (r ? { factor: Number(r.factor), at: Number(r.at) } : undefined));
     },
     async getSticky(key) {
       const r = (await op({ op: 'kv-get', now: 0, key: `k:${ns(key)}` })) as { value: string; until: number } | null;

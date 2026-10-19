@@ -60,6 +60,8 @@ export interface QuotaPoolOptions {
    * published 30 RPM for one free account on 2026-10-19). Per process. `false` turns it off.
    */
   adaptive?: false | { recoverMs?: number };
+  /** Cooldown after a "busy upstream" 429 (the model's host, not your quota) without a retry hint. Default 15s. */
+  upstreamCooldownMs?: number;
   clock?: Clock;
   random?: () => number;
   onEvent?: (event: PoolEvent) => void;
@@ -105,10 +107,10 @@ const DAY_MS = 86_400_000;
  * (other processes, earlier runs, clock skew). Rolling windows drain over their length;
  * calendar days stay full until the next local midnight.
  */
-function fullWindows(m: ResolvedMember, reading: HeaderReading, now: number): ProviderTruth[] {
+function fullWindows(limits: Limits, reading: HeaderReading, now: number, except?: Limits): ProviderTruth[] {
   return (reading.limited ?? []).flatMap((dim): ProviderTruth[] => {
-    if (m.limits[dim] === undefined) return [];
-    const spec = windowSpec(dim, m.limits.dailyReset);
+    if (limits[dim] === undefined || except?.[dim] !== undefined) return [];
+    const spec = windowSpec(dim, limits.dailyReset);
     return spec.kind === 'rolling'
       ? [{ dim, remaining: 0, resetInMs: spec.windowMs, drain: true }]
       : [{ dim, remaining: 0, resetInMs: nextDayStart(now, spec.timeZone) - now }];
@@ -141,40 +143,44 @@ export function createQuotaPool(options: QuotaPoolOptions): QuotaPool {
   const rateLimitStreak = new Map<string, number>();
   const members = resolveMembers(options);
   const recoverMs = options.adaptive === false ? 0 : (options.adaptive?.recoverMs ?? 300_000);
-  // memberId|dim -> the factor set by the last named 429, and when.
-  const adapted = new Map<string, { factor: number; at: number }>();
+  const adaptOptions = { step: 0.75, min: 0.25, recoverMs, debounceMs: 10_000 };
+  const upstreamCooldownMs = options.upstreamCooldownMs ?? 15_000;
+  const adaptiveKeys = members.flatMap((m) => DIMENSIONS.filter((d) => m.limits[d] !== undefined).map((d) => `${m.member.id}|${d}`));
+  // Factors live in the store (shared by every instance); read them at most once a second.
+  let factorCache: { at: number; factors: Record<string, number> } | undefined;
 
-  function factorFor(memberId: string, dim: Dimension, now: number): number {
-    const a = adapted.get(`${memberId}|${dim}`);
-    if (!a) return 1;
-    const factor = Math.min(1, a.factor + ((now - a.at) / recoverMs) * (1 - a.factor));
-    if (factor >= 1) adapted.delete(`${memberId}|${dim}`);
-    return factor;
+  async function factors(now: number): Promise<Record<string, number>> {
+    if (!recoverMs) return {};
+    if (factorCache && now - factorCache.at < 1_000) return factorCache.factors;
+    factorCache = { at: now, factors: await store.getAdapted(adaptiveKeys, now, recoverMs) };
+    return factorCache.factors;
   }
 
-  function effectiveLimits(m: ResolvedMember, now: number): Limits {
-    if (!adapted.size) return m.limits;
-    const out: Limits = { ...m.limits };
+  function effectiveLimits(m: ResolvedMember, f: Record<string, number>): Limits {
+    let out: Limits | undefined;
     for (const dim of DIMENSIONS) {
       const v = m.limits[dim];
-      if (v !== undefined) out[dim] = Math.max(1, Math.floor(v * factorFor(m.member.id, dim, now)));
+      const factor = f[`${m.member.id}|${dim}`];
+      if (v === undefined || factor === undefined) continue;
+      out ??= { ...m.limits };
+      out[dim] = Math.max(1, Math.floor(v * factor));
     }
-    return out;
+    return out ?? m.limits;
   }
 
-  function adapt(m: ResolvedMember, reading: HeaderReading, now: number) {
+  async function adapt(m: ResolvedMember, reading: HeaderReading, now: number) {
     if (!recoverMs) return;
     for (const dim of reading.limited ?? []) {
       if (m.limits[dim] === undefined) continue;
-      const factor = Math.max(0.25, factorFor(m.member.id, dim, now) * 0.75);
-      adapted.set(`${m.member.id}|${dim}`, { factor, at: now });
-      emit({ type: 'adapt', memberId: m.member.id, dim, factor });
+      const { factor, changed } = await store.adapt(`${m.member.id}|${dim}`, now, adaptOptions);
+      if (changed) emit({ type: 'adapt', memberId: m.member.id, dim, factor });
     }
+    factorCache = undefined;
   }
   const groupIds = [...new Set(members.flatMap((m) => m.groups.map((g) => g.key)))];
 
-  function charges(m: ResolvedMember, tokens: number, budgetKey: string | undefined): Charge[] {
-    const list: Charge[] = [{ key: m.key, limits: effectiveLimits(m, clock.now()), requests: 1, tokens }];
+  function charges(m: ResolvedMember, limits: Limits, tokens: number, budgetKey: string | undefined): Charge[] {
+    const list: Charge[] = [{ key: m.key, limits, requests: 1, tokens }];
     for (const g of m.groups) list.push({ key: g.key, limits: g.limits, requests: 1, tokens });
     if (budgetKey !== undefined && options.budgets?.perKey) {
       list.push({ key: `b:${budgetKey}`, limits: options.budgets.perKey, requests: 1, tokens });
@@ -182,8 +188,14 @@ export function createQuotaPool(options: QuotaPoolOptions): QuotaPool {
     return list;
   }
 
+  /** Header readings are the provider's own numbers: measure them against the configured limits. */
   async function applyReading(m: ResolvedMember, reading: HeaderReading, now: number) {
-    if (reading.truths.length) await store.applyProviderTruth(m.key, effectiveLimits(m, now), reading.truths, now);
+    if (reading.truths.length) await store.applyProviderTruth(m.key, m.limits, reading.truths, now);
+    // A full window the member has no limit for belongs to a shared group (OpenRouter's daily cap).
+    for (const g of m.groups) {
+      const truths = fullWindows(g.limits, reading, now, m.limits);
+      if (truths.length) await store.applyProviderTruth(g.key, g.limits, truths, now);
+    }
   }
 
   function totalTokens(usage: LanguageModelV4Usage | undefined): number | undefined {
@@ -202,7 +214,10 @@ export function createQuotaPool(options: QuotaPoolOptions): QuotaPool {
 
   async function cooldownAfter(m: ResolvedMember, kind: 'rate-limit' | 'retryable', reading: HeaderReading, now: number) {
     let until: number;
-    if (kind === 'rate-limit') {
+    if (reading.upstream) {
+      // The model's host is busy, not your quota: a short pause for this model only.
+      until = now + (reading.retryAfterMs ?? upstreamCooldownMs);
+    } else if (kind === 'rate-limit') {
       const streak = (rateLimitStreak.get(m.member.id) ?? 0) + 1;
       rateLimitStreak.set(m.member.id, streak);
       if (reading.dailyExhausted) {
@@ -246,6 +261,7 @@ export function createQuotaPool(options: QuotaPoolOptions): QuotaPool {
       exclude: poolOptions.exclude,
       stickyMemberId,
     });
+    const adaptiveFactors = await factors(clock.now());
     const failures: MemberFailure[] = [];
     for (const s of skipped) {
       emit({ type: 'skip', ...s });
@@ -257,7 +273,8 @@ export function createQuotaPool(options: QuotaPoolOptions): QuotaPool {
       const prompt = strip ? stripForeignProviderData(callOptions.prompt, m.member.model.provider) : callOptions.prompt;
       const options = { ...callOptions, prompt };
       const estimated = estimateInput(options) + outputs.expected(m.member.id, callOptions.maxOutputTokens);
-      const reserved = await store.reserve(charges(m, estimated, poolOptions.budgetKey), { now: clock.now(), ttlMs });
+      const limits = effectiveLimits(m, adaptiveFactors);
+      const reserved = await store.reserve(charges(m, limits, estimated, poolOptions.budgetKey), { now: clock.now(), ttlMs });
       if (!reserved.ok) {
         const reason = reserved.retryAfterMs === Infinity ? 'never-fits' : 'quota';
         const retry = reserved.retryAfterMs === Infinity ? {} : { retryAfterMs: reserved.retryAfterMs };
@@ -295,13 +312,19 @@ export function createQuotaPool(options: QuotaPoolOptions): QuotaPool {
           ? adapterFor(m.member)({ headers: error.responseHeaders, status: error.statusCode, body: error.responseBody }, now)
           : { truths: [] };
         emit({ type: 'fail', memberId: m.member.id, kind, error });
-        // Lower the effective limit first, so the full window drains from the provider's real pace.
-        adapt(m, reading, now);
-        await applyReading(m, { ...reading, truths: [...reading.truths, ...fullWindows(m, reading, now)] }, now);
+        if (!reading.upstream) {
+          // Lower the effective limit first, so the full window drains from the provider's real pace.
+          await adapt(m, reading, now);
+          await applyReading(m, reading, now);
+          // The full window is our estimate of the provider's state: drain it from the adapted limit.
+          const lowered = effectiveLimits(m, await factors(now));
+          const full = fullWindows(lowered, reading, now);
+          if (full.length) await store.applyProviderTruth(m.key, lowered, full, now);
+        }
         await cooldownAfter(m, kind, reading, now);
         failures.push({
           memberId: m.member.id,
-          reason: kind,
+          reason: reading.upstream ? 'upstream-busy' : kind,
           ...(reading.retryAfterMs === undefined ? {} : { retryAfterMs: reading.retryAfterMs }),
         });
         lastError = error;

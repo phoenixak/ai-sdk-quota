@@ -9,6 +9,7 @@ import {
   windowStart,
   windowSum,
 } from '../windows.js';
+import { type Adapted, lowered, recovered } from './adaptive.js';
 import { type Floor, floorAt, floorWait, replacesFloor } from './floor.js';
 import type { Charge, Placement, QuotaStore, Reservation, ReserveResult, Usage } from './types.js';
 
@@ -28,6 +29,7 @@ export function memoryStore(): QuotaStore {
   const live = new Map<string, Reservation>();
   const cooldowns = new Map<string, number>();
   const sticky = new Map<string, { memberId: string; until: number }>();
+  const adapted = new Map<string, Adapted>();
   let nextId = 0;
 
   const seriesKey = (key: string, dim: Dimension) => `${key}|${dim}`;
@@ -195,6 +197,21 @@ export function memoryStore(): QuotaStore {
     async getSticky(key, now) {
       const s = sticky.get(key);
       return s && s.until > now ? s.memberId : undefined;
+    },
+
+    async adapt(key, now, options) {
+      const { record, factor, changed } = lowered(adapted.get(key), now, options);
+      adapted.set(key, record);
+      return { factor, changed };
+    },
+
+    async getAdapted(keys, now, recoverMs) {
+      const out: Record<string, number> = {};
+      for (const key of keys) {
+        const factor = recovered(adapted.get(key), now, recoverMs);
+        if (factor < 1) out[key] = factor;
+      }
+      return out;
     },
   };
 }

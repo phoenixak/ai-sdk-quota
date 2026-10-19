@@ -1,4 +1,5 @@
 import type { DailyReset, Dimension, Limits, ProviderTruth } from '../types.js';
+import type { AdaptOptions } from './adaptive.js';
 
 /** One bucket of capacity a call charges: a pool member, a shared group, or a budget key. */
 export interface Charge {
@@ -64,4 +65,8 @@ export interface QuotaStore {
   getCooldown(memberId: string, now: number): Promise<number>;
   setSticky(key: string, memberId: string, ttlMs: number, now: number): Promise<void>;
   getSticky(key: string, now: number): Promise<string | undefined>;
+  /** Lowers an adaptive limit factor after a 429 (debounced across instances). */
+  adapt(key: string, now: number, options: AdaptOptions): Promise<{ factor: number; changed: boolean }>;
+  /** Current factors below 1 for these keys, recovered to `now`. */
+  getAdapted(keys: string[], now: number, recoverMs: number): Promise<Record<string, number>>;
 }

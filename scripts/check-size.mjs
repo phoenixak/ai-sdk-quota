@@ -3,7 +3,10 @@
 import { build } from 'esbuild';
 import { gzipSync } from 'node:zlib';
 
-const BUDGET = 10 * 1024;
+// Raised from 10 KB to 12 KB on purpose (see CHANGELOG 0.1.0): learning from provider
+// 429s (draining windows, adaptive limits shared through the store, header-first
+// parsing, upstream detection) is core behavior, not an add-on, and costs ~1.5 KB.
+const BUDGET = 12 * 1024;
 const entries = {
   core: 'dist/index.js',
   'stores/upstash': 'dist/store/upstash.js',
