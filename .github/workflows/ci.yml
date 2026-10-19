@@ -11,6 +11,33 @@ jobs:
     strategy:
       matrix:
         node: [20, 22, 24]
+    services:
+      redis:
+        image: redis:8-alpine
+        ports: ['6379:6379']
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: quota
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 2s --health-timeout 5s --health-retries 15
+      # Upstash's local REST emulator, so upstashStore is tested over the same REST protocol.
+      upstash:
+        image: hiett/serverless-redis-http:latest
+        env:
+          SRH_MODE: env
+          SRH_TOKEN: ci_test_token
+          SRH_CONNECTION_STRING: redis://redis:6379
+        ports: ['8079:80']
+    env:
+      REQUIRE_SERVICE_STORES: '1'
+      DATABASE_URL: postgres://postgres:test@localhost:5432/quota
+      REDIS_URL: redis://localhost:6379
+      UPSTASH_REDIS_REST_URL: http://localhost:8079
+      UPSTASH_REDIS_REST_TOKEN: ci_test_token
+      PROPERTY_RUNS: '1000'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -19,8 +46,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
+      - run: npm run check:registry
       - run: npm run coverage
-        env:
-          PROPERTY_RUNS: '1000'
       - run: npm run build
       - run: npm run lint:pkg

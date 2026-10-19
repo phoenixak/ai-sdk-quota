@@ -63,6 +63,6 @@ Upstash budget: one pool call costs about 2–3 commands (reserve, commit, somet
 
 1. **Spec and stream delegation:** `LanguageModelV4`; see "Holding back the first chunk" above.
 2. **Gemini quota:** per project and per model, resetting at midnight Pacific. The vendor page doesn't document a retry delay in the 429 body. The adapter parses `RetryInfo.retryDelay` or "retry in Ns" when present, and otherwise falls back to exponential backoff.
-3. **Postgres `reserve()` latency:** it's a single round trip, about 1–3 ms within one region and 70 ms or more across regions. To be measured in Phase 2 on Supabase free. Keep the app and the database in the same region.
+3. **Postgres `reserve()` latency:** one function call per step. Local baseline (Phase 2, Postgres 17 in Docker, `bench/store-latency.mjs`): reserve + commit p50 2.83 ms, p95 3.11 ms; Redis 8: p50 1.06 ms. **Not yet measured on hosted Supabase from Vercel**: run `DATABASE_URL=... BENCH_CREATE_SCHEMA=1 node bench/store-latency.mjs` from the same region. Keep the app and the database in the same region.
 4. **Community listing:** a PR to `vercel/ai` adding `content/providers/05-community-providers/NN-<name>.mdx`, with the OpenRouter page as the template. The package must first be published on npm and GitHub.
 5. **Name:** `ai-sdk-quota` (free on npm, no GitHub repos with that name).

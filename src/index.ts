@@ -1,6 +1,8 @@
 export { createQuotaPool } from './pool.js';
 export type { MemberSnapshot, PoolModelOptions, PoolSnapshot, QuotaPool, QuotaPoolOptions } from './pool.js';
 export { memoryStore } from './store/memory.js';
+export { createScriptedStore } from './store/scripted.js';
+export type { CommitPlacement, SeriesOp, SeriesUsage, StoreBackend } from './store/scripted.js';
 export type { Charge, Placement, QuotaStore, Reservation, ReserveResult, Usage, WindowUsage } from './store/types.js';
 export { PoolExhaustedError, classifyError } from './errors.js';
 export type { FailureKind, MemberFailure } from './errors.js';

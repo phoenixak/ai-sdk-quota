@@ -75,6 +75,11 @@ export interface PoolSnapshot {
 export interface QuotaPool {
   model(options?: PoolModelOptions): LanguageModelV4;
   snapshot(): Promise<PoolSnapshot>;
+  /**
+   * What is left of a budget key's limits (`budgets.perKey`), e.g. for
+   * "you have 12 messages left today": `(await pool.remaining(userId)).rpd?.remaining`.
+   */
+  remaining(budgetKey: string): Promise<Usage>;
 }
 
 const DAY_MS = 86_400_000;
@@ -324,7 +329,12 @@ export function createQuotaPool(options: QuotaPoolOptions): QuotaPool {
     return out;
   }
 
-  return { model, snapshot };
+  async function remaining(budgetKey: string): Promise<Usage> {
+    const limits = options.budgets?.perKey;
+    return limits ? store.usage(`b:${budgetKey}`, limits, clock.now()) : {};
+  }
+
+  return { model, snapshot, remaining };
 }
 
 /** Rejects as soon as `signal` aborts, even if the provider ignores the signal. */

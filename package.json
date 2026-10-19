@@ -11,6 +11,9 @@
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "bin": {
+    "ai-sdk-quota": "./dist/cli.js"
+  },
   "exports": {
     ".": {
       "import": {
@@ -30,6 +33,36 @@
       "require": {
         "types": "./dist/limits/index.d.cts",
         "default": "./dist/limits/index.cjs"
+      }
+    },
+    "./stores/redis": {
+      "import": {
+        "types": "./dist/store/redis.d.ts",
+        "default": "./dist/store/redis.js"
+      },
+      "require": {
+        "types": "./dist/store/redis.d.cts",
+        "default": "./dist/store/redis.cjs"
+      }
+    },
+    "./stores/upstash": {
+      "import": {
+        "types": "./dist/store/upstash.d.ts",
+        "default": "./dist/store/upstash.js"
+      },
+      "require": {
+        "types": "./dist/store/upstash.d.cts",
+        "default": "./dist/store/upstash.cjs"
+      }
+    },
+    "./stores/postgres": {
+      "import": {
+        "types": "./dist/store/postgres.d.ts",
+        "default": "./dist/store/postgres.js"
+      },
+      "require": {
+        "types": "./dist/store/postgres.d.cts",
+        "default": "./dist/store/postgres.cjs"
       }
     },
     "./package.json": "./package.json"
@@ -53,7 +86,9 @@
     "test": "vitest run",
     "coverage": "vitest run --coverage",
     "lint:pkg": "publint && attw --pack . --profile node16",
-    "check:terms": "sh scripts/check-private-terms.sh"
+    "check:terms": "sh scripts/check-private-terms.sh",
+    "check:registry": "node scripts/check-registry.mjs",
+    "test:services": "node scripts/test-services.mjs"
   },
   "peerDependencies": {
     "@ai-sdk/provider": "^4.0.0"
@@ -61,10 +96,14 @@
   "devDependencies": {
     "@ai-sdk/provider": "^4.0.29",
     "@arethetypeswrong/cli": "^0.18.5",
+    "@electric-sql/pglite": "^0.5.10",
     "@types/node": "^26.6.5",
+    "@types/pg": "^8.23.1",
     "@vitest/coverage-v8": "^5.0.5",
     "ai": "^7.0.143",
     "fast-check": "^4.10.2",
+    "ioredis": "^6.0.0",
+    "pg": "^8.23.1",
     "publint": "^0.3.25",
     "tsup": "^9.0.0",
     "typescript": "^6.0.3",

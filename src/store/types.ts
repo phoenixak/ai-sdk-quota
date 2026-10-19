@@ -1,4 +1,4 @@
-import type { Dimension, Limits, ProviderTruth } from '../types.js';
+import type { DailyReset, Dimension, Limits, ProviderTruth } from '../types.js';
 
 /** One bucket of capacity a call charges: a pool member, a shared group, or a budget key. */
 export interface Charge {
@@ -16,6 +16,8 @@ export interface Placement {
   dim: Dimension;
   bucket: number;
   amount: number;
+  /** Set when the window resets at local midnight, so a late commit can find today's bucket. */
+  dailyReset?: DailyReset;
 }
 
 export interface Reservation {

@@ -6,8 +6,14 @@ import type { Limits } from '../src/types.js';
  * Behaviour every QuotaStore must have. Phase 2 stores (Upstash, ioredis, Postgres)
  * run this same suite.
  */
-export function describeStoreContract(name: string, makeStore: () => QuotaStore | Promise<QuotaStore>) {
+export function describeStoreContract(
+  name: string,
+  make: (prefix: string) => QuotaStore | Promise<QuotaStore>,
+  options: { shared?: boolean } = {},
+) {
   const T0 = Date.UTC(2026, 9, 19, 12);
+  // A fresh namespace per test, so tests never see each other's keys.
+  const makeStore = () => make(`t${Math.random().toString(36).slice(2, 10)}`);
   const TTL = 300_000;
   const charge = (key: string, limits: Limits, tokens = 0, requests = 1) => ({ key, limits, requests, tokens });
 
@@ -165,6 +171,9 @@ export function describeStoreContract(name: string, makeStore: () => QuotaStore 
       // A new reading after the old one expired replaces it.
       await store.applyProviderTruth('m:a', limits, [{ dim: 'rpd', remaining: 990, resetInMs: 3_000 }], T0 + 4_000);
       expect((await store.usage('m:a', limits, T0 + 4_000)).rpd?.used).toBe(10);
+      // Readings for windows without a limit change nothing.
+      await store.applyProviderTruth('m:a', { rpm: 5 }, [{ dim: 'tpd', remaining: 0, resetInMs: 1_000 }], T0 + 4_000);
+      expect((await store.usage('m:a', { rpm: 5 }, T0 + 4_000)).rpm?.used).toBe(0);
     });
 
     it('a charge that can never fit is refused even under a provider floor', async () => {
@@ -192,6 +201,41 @@ export function describeStoreContract(name: string, makeStore: () => QuotaStore 
       await store.setCooldown('a', T0 + 1_000);
       expect(await store.getCooldown('a', T0)).toBe(T0 + 5_000);
       expect(await store.getCooldown('a', T0 + 5_000)).toBe(0);
+    });
+
+    it('admits exactly the limit under concurrent reserves', async () => {
+      const store = await makeStore();
+      const limits = { rpm: 7, tpm: 7_000 };
+      const results = await Promise.all(
+        Array.from({ length: 20 }, () => store.reserve([charge('m:a', limits, 900)], { now: T0, ttlMs: TTL })),
+      );
+      expect(results.filter((r) => r.ok)).toHaveLength(7);
+    });
+
+    if (options.shared) {
+      it('stays atomic across separate store instances (separate connections)', async () => {
+        const prefix = `t${Math.random().toString(36).slice(2, 10)}`;
+        const stores = await Promise.all(Array.from({ length: 4 }, () => make(prefix)));
+        const limits = { rpd: 9 };
+        const results = await Promise.all(
+          Array.from({ length: 24 }, (_, i) => stores[i % 4]!.reserve([charge('g:shared', limits)], { now: T0, ttlMs: TTL })),
+        );
+        expect(results.filter((r) => r.ok)).toHaveLength(9);
+        expect((await stores[0]!.usage('g:shared', limits, T0)).rpd?.used).toBe(9);
+      });
+    }
+
+    it('keeps calendar-day placements usable for late commits', async () => {
+      const store = await makeStore();
+      const limits = { rpd: 5, tpd: 1_000, dailyReset: { timeZone: 'America/Los_Angeles' } } as const;
+      const r = (await store.reserve([charge('m:a', limits, 100)], { now: T0, ttlMs: 1_000 })) as {
+        ok: true;
+        reservation: Reservation;
+      };
+      await store.commit(r.reservation, 30, T0 + 5_000);
+      const u = await store.usage('m:a', limits, T0 + 5_000);
+      expect(u.rpd?.used).toBe(1);
+      expect(u.tpd?.used).toBe(30);
     });
 
     it('stores sticky members with a TTL', async () => {

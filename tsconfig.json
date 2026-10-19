@@ -14,7 +14,7 @@
     "skipLibCheck": true,
     "types": ["node"],
     "noEmit": true,
-    "paths": { "ai-sdk-quota": ["./src/index.ts"], "ai-sdk-quota/limits": ["./src/limits/index.ts"] }
+    "paths": { "ai-sdk-quota": ["./src/index.ts"], "ai-sdk-quota/limits": ["./src/limits/index.ts"], "ai-sdk-quota/stores/*": ["./src/store/*.ts"] }
   },
   "include": ["src", "test", "examples", "*.config.ts"]
 }

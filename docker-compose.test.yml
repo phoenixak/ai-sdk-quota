@@ -1,0 +1,19 @@
+# Local services for the store tests: docker compose -f docker-compose.test.yml up -d
+# then: npm run test:services
+services:
+  redis:
+    image: redis:8-alpine
+    ports: ['6390:6379']
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_PASSWORD: test
+      POSTGRES_DB: quota
+    ports: ['5440:5432']
+  upstash:
+    image: hiett/serverless-redis-http:latest
+    environment:
+      SRH_MODE: env
+      SRH_TOKEN: local_test_token
+      SRH_CONNECTION_STRING: redis://redis:6379
+    ports: ['8079:80']

@@ -280,12 +280,15 @@ describe('createQuotaPool: generate', () => {
     const a = mock('groq.chat', 'x', { doGenerate: generated('a') });
     const pool = createQuotaPool({ models: [{ id: 'a', model: a }], budgets: { perKey: { rpd: 1 } }, ...s });
     await pool.model({ budgetKey: 'tenant-1' }).doGenerate({ prompt: userPrompt('x') });
+    expect((await pool.remaining('tenant-1')).rpd).toMatchObject({ used: 1, limit: 1, remaining: 0 });
+    expect((await pool.remaining('tenant-2')).rpd).toMatchObject({ used: 0, remaining: 1 });
     await expect(pool.model({ budgetKey: 'tenant-1' }).doGenerate({ prompt: userPrompt('x') })).rejects.toBeInstanceOf(PoolExhaustedError);
     await pool.model({ budgetKey: 'tenant-2' }).doGenerate({ prompt: userPrompt('x') });
     await pool.model().doGenerate({ prompt: userPrompt('x') });
     // No perKey limits configured: budget keys are ignored.
     const open = createQuotaPool({ models: [{ id: 'a', model: a }], ...setup() });
     await open.model({ budgetKey: 'k' }).doGenerate({ prompt: userPrompt('x') });
+    expect(await open.remaining('k')).toEqual({});
   });
 
   it('keeps a conversation on its member while it has quota (sticky)', async () => {

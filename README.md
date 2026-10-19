@@ -2,7 +2,7 @@
 
 A quota-aware model pool for the [Vercel AI SDK](https://ai-sdk.dev). Give it several models (free tiers, paid keys, local), and it routes each call to one that **still has headroom**, before you hit a 429.
 
-> Work in progress (Phase 1: core). Not published yet.
+> Work in progress (Phases 1–2 done: core, shared stores, budgets, probe CLI). Not published yet.
 
 ```ts
 import { streamText } from 'ai';
@@ -43,7 +43,52 @@ Limits for known free tiers live in `ai-sdk-quota/limits`, each entry with its s
 
 ## Stores
 
-`memoryStore()` (the default) keeps state in one process. On serverless, every instance would have its own copy, so shared stores (Upstash Redis, ioredis, Postgres) are coming in Phase 2.
+`memoryStore()` (the default) keeps state in one process. On serverless every instance has its own copy, so use a shared store there. All of them pass the same test suite, including concurrent reserves from separate connections.
+
+```ts
+// Upstash Redis over REST: no client dependency, works on Vercel and Cloudflare Workers.
+import { upstashStore } from 'ai-sdk-quota/stores/upstash';
+const store = upstashStore({ url: process.env.UPSTASH_REDIS_REST_URL!, token: process.env.UPSTASH_REDIS_REST_TOKEN! });
+
+// Any Redis server, through ioredis.
+import { Redis } from 'ioredis';
+import { redisStore } from 'ai-sdk-quota/stores/redis';
+const store = redisStore(new Redis(process.env.REDIS_URL!));
+
+// Postgres (Supabase, Neon, RDS): run postgresSchemaSql() once as a migration,
+// then grant EXECUTE on quota_op(jsonb) to your server's role (e.g. service_role).
+import pg from 'pg';
+import { postgresStore, postgresSchemaSql } from 'ai-sdk-quota/stores/postgres';
+const store = postgresStore(new pg.Pool({ connectionString: process.env.DATABASE_URL }));
+```
+
+| Store | Store work per pool call (reserve + commit), local benchmark |
+|---|---|
+| Redis 8 | p50 1.1 ms |
+| Postgres 17 | p50 2.8 ms (one function call per step, under an advisory lock) |
+| Upstash | two HTTPS requests; add your region's round trip twice |
+
+Keep the store in the same region as your functions. On Upstash's free tier (500K commands a month), one pool call costs about 2–3 commands, so roughly 170k–250k calls a month (estimate; Upstash doesn't document how scripts are counted). Redis Cluster isn't supported yet: every key shares one hash tag.
+
+## Budgets
+
+```ts
+const pool = createQuotaPool({ models, store, budgets: { perKey: { rpd: 50, tpd: 100_000 } } });
+streamText({ model: pool.model({ budgetKey: userId }), prompt });
+const left = (await pool.remaining(userId)).rpd?.remaining; // "you have 12 messages left today"
+```
+
+## Probe your real limits
+
+Limits differ by account and change often. Send one tiny request with your own key and read what the provider reports:
+
+```sh
+GROQ_API_KEY=... npx ai-sdk-quota probe --provider groq
+OPENROUTER_API_KEY=... npx ai-sdk-quota probe --provider openrouter
+npx ai-sdk-quota probe --provider gemini   # explains where Google shows your limits
+```
+
+The key is read from an environment variable, never from the command line.
 
 ## Policy
 
