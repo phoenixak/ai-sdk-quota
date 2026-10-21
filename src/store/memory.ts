@@ -10,6 +10,7 @@ import {
   windowSum,
 } from '../windows.js';
 import { type Adapted, lowered, recovered } from './adaptive.js';
+import { actualFor, chargeAmount } from './amounts.js';
 import { type Floor, floorAt, floorWait, replacesFloor } from './floor.js';
 import type { Charge, Placement, QuotaStore, Reservation, ReserveResult, Usage } from './types.js';
 
@@ -76,9 +77,6 @@ export function memoryStore(): QuotaStore {
     return floorAt(floors.get(seriesKey(key, dim)), now);
   }
 
-  function amountFor(charge: Charge, dim: Dimension): number {
-    return isTokenDimension(dim) ? charge.tokens : charge.requests;
-  }
 
   return {
     async reserve(charges, { now, ttlMs }): Promise<ReserveResult> {
@@ -87,7 +85,7 @@ export function memoryStore(): QuotaStore {
       for (const charge of charges) {
         for (const dim of DIMENSIONS) {
           const limit = charge.limits[dim];
-          const need = amountFor(charge, dim);
+          const need = chargeAmount(charge, dim);
           if (limit === undefined || need <= 0) continue;
           const spec = windowSpec(dim, charge.limits.dailyReset);
           const s = getSeries(charge.key, dim, charge.limits);
@@ -109,7 +107,7 @@ export function memoryStore(): QuotaStore {
       const placements: Placement[] = [];
       for (const charge of charges) {
         for (const dim of DIMENSIONS) {
-          const amount = amountFor(charge, dim);
+          const amount = chargeAmount(charge, dim);
           if (charge.limits[dim] === undefined || amount <= 0) continue;
           const s = getSeries(charge.key, dim, charge.limits);
           const bucket = bucketStart(windowSpec(dim, charge.limits.dailyReset), now);
@@ -127,9 +125,9 @@ export function memoryStore(): QuotaStore {
     async commit(reservation, actualTokens, now) {
       sweep(now);
       if (live.delete(reservation.id)) {
-        if (actualTokens === undefined) return;
         for (const p of reservation.placements) {
-          if (isTokenDimension(p.dim)) add(seriesKey(p.key, p.dim), p.bucket, actualTokens - p.amount);
+          const actual = actualFor(p.dim, actualTokens);
+          if (actual !== undefined) add(seriesKey(p.key, p.dim), p.bucket, actual - p.amount);
         }
         return;
       }
@@ -137,7 +135,7 @@ export function memoryStore(): QuotaStore {
       for (const p of reservation.placements) {
         const s = series.get(seriesKey(p.key, p.dim));
         if (!s) continue;
-        const amount = isTokenDimension(p.dim) ? (actualTokens ?? p.amount) : p.amount;
+        const amount = actualFor(p.dim, actualTokens) ?? p.amount;
         const bucket = bucketStart(windowSpec(p.dim, s.limits.dailyReset), now);
         s.buckets.set(bucket, (s.buckets.get(bucket) ?? 0) + amount);
       }

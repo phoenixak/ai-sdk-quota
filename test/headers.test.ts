@@ -127,6 +127,17 @@ describe('named windows in 429 bodies', () => {
     expect(openaiHeaders({ status: 429, body: 'on tokens per min (TPM): Limit 8000 ... (TPM) and (RPD)' }, NOW).limited).toEqual(['tpm', 'rpd']);
   });
 
+  it('reads Groq output and input token windows (OTPM / ITPM)', () => {
+    const otpm = JSON.stringify({
+      error: {
+        message:
+          'Rate limit reached for model `qwen/qwen3.8-27b` in organization `org_000` service tier `on_demand` on output tokens per minute (OTPM): Limit 1000, Used 916, Requested 91. Please try again in 420ms.',
+      },
+    });
+    expect(groqHeaders({ status: 429, body: otpm }, NOW)).toEqual({ truths: [], retryAfterMs: 420, limited: ['otpm'] });
+    expect(namedWindows('on input tokens per minute (ITPM)')).toEqual(['itpm']);
+  });
+
   it('ignores bodies of other statuses and messages without a named window', () => {
     expect(groqHeaders({ status: 400, body: groq429 }, NOW).limited).toBeUndefined();
     expect(groqHeaders({ status: 429, body: 'slow down' }, NOW).limited).toBeUndefined();

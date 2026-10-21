@@ -1,6 +1,7 @@
 import type { Dimension, Limits } from '../types.js';
-import { DIMENSIONS, bucketStart, isTokenDimension, nextResetMs, windowSpec, windowStart } from '../windows.js';
+import { DIMENSIONS, bucketStart, nextResetMs, windowSpec, windowStart } from '../windows.js';
 import { type AdaptOptions, type Adapted, recovered } from './adaptive.js';
+import { actualFor, chargeAmount } from './amounts.js';
 import { floorAt } from './floor.js';
 import type { Placement, QuotaStore, Reservation, Usage } from './types.js';
 
@@ -30,7 +31,8 @@ export interface CommitPlacement {
   series: string;
   bucket: number;
   amount: number;
-  isToken: boolean;
+  /** The real amount for this window, or -1 to keep the estimate. */
+  actual: number;
   /** Where a commit for an already-expired reservation records its usage. */
   nowBucket: number;
   keepMs: number;
@@ -54,7 +56,7 @@ export interface StoreBackend {
   reserve(args: { ops: SeriesOp[]; id: string; now: number; ttlMs: number }): Promise<
     { ok: true } | { ok: false; wait: number; index: number }
   >;
-  commit(args: { id: string; actual: number | undefined; placements: CommitPlacement[]; now: number }): Promise<void>;
+  commit(args: { id: string; placements: CommitPlacement[]; now: number }): Promise<void>;
   release(args: { id: string; now: number }): Promise<void>;
   truth(args: { entries: { series: string; used: number; until: number; drain: boolean }[]; now: number }): Promise<void>;
   usage(args: { entries: { series: string; from: number }[]; now: number }): Promise<SeriesUsage[]>;
@@ -100,7 +102,7 @@ export function createScriptedStore(backend: StoreBackend): QuotaStore {
       for (const charge of charges) {
         for (const dim of DIMENSIONS) {
           const limit = charge.limits[dim];
-          const need = isTokenDimension(dim) ? charge.tokens : charge.requests;
+          const need = chargeAmount(charge, dim);
           if (limit === undefined || need <= 0) continue;
           ops.push(op(charge.key, dim, charge.limits, need, limit, now));
           meta.push({ key: charge.key, dim, limits: charge.limits });
@@ -138,12 +140,12 @@ export function createScriptedStore(backend: StoreBackend): QuotaStore {
           series: seriesName(p.key, p.dim),
           bucket: p.bucket,
           amount: p.amount,
-          isToken: isTokenDimension(p.dim),
+          actual: actualFor(p.dim, actualTokens) ?? -1,
           nowBucket: bucketStart(spec, now),
           keepMs: keepFor(spec, nextReset),
         };
       });
-      await backend.commit({ id: reservation.id, actual: actualTokens, placements, now });
+      await backend.commit({ id: reservation.id, placements, now });
     },
 
     async release(reservation, now) {

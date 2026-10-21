@@ -1,9 +1,14 @@
 import type { DailyReset, Dimension } from './types.js';
 
-export const DIMENSIONS: readonly Dimension[] = ['rps', 'rpm', 'rpd', 'tpm', 'tpd'];
+export const DIMENSIONS: readonly Dimension[] = ['rps', 'rpm', 'rpd', 'tpm', 'tpd', 'itpm', 'otpm'];
 
 export function isTokenDimension(dim: Dimension): boolean {
-  return dim === 'tpm' || dim === 'tpd';
+  return dim === 'tpm' || dim === 'tpd' || dim === 'itpm' || dim === 'otpm';
+}
+
+/** Which token count a window measures: all tokens, prompt tokens or completion tokens. */
+export function tokenKind(dim: Dimension): 'total' | 'input' | 'output' {
+  return dim === 'itpm' ? 'input' : dim === 'otpm' ? 'output' : 'total';
 }
 
 /**
@@ -33,6 +38,8 @@ export function windowSpec(dim: Dimension, dailyReset: DailyReset = 'rolling'): 
       return { kind: 'rolling', windowMs: SECOND + SLACK.rps, bucketMs: 100 };
     case 'rpm':
     case 'tpm':
+    case 'itpm':
+    case 'otpm':
       return { kind: 'rolling', windowMs: MINUTE + SLACK.minute, bucketMs: SECOND };
     case 'rpd':
     case 'tpd':

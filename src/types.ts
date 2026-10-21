@@ -1,7 +1,10 @@
 import type { LanguageModelV4 } from '@ai-sdk/provider';
 
-/** Rate-limit windows: requests per second/minute/day, tokens per minute/day. */
-export type Dimension = 'rps' | 'rpm' | 'rpd' | 'tpm' | 'tpd';
+/**
+ * Rate-limit windows: requests per second/minute/day; tokens per minute/day; and
+ * input/output tokens per minute (Groq applies ITPM/OTPM to "some organizations").
+ */
+export type Dimension = 'rps' | 'rpm' | 'rpd' | 'tpm' | 'tpd' | 'itpm' | 'otpm';
 
 /**
  * How daily windows (rpd, tpd) reset: a rolling 24 hours, or at local midnight
@@ -15,6 +18,10 @@ export interface Limits {
   rpd?: number;
   tpm?: number;
   tpd?: number;
+  /** Input (prompt) tokens per minute. */
+  itpm?: number;
+  /** Output (completion) tokens per minute. */
+  otpm?: number;
   /** Defaults to `'rolling'`. */
   dailyReset?: DailyReset;
 }

@@ -79,7 +79,7 @@ const redact = (text) => text.replace(/\s+/g, ' ').replace(/\borg_[A-Za-z0-9]+/g
 /** Which limit a 429 says it hit, from its body. */
 function triggerOf(body) {
   if (/rate-limited upstream/i.test(body)) return 'upstream';
-  const named = /\((RPS|RPM|RPD|TPM|TPD)\)/i.exec(body);
+  const named = /\((RPS|RPM|RPD|TPM|TPD|ITPM|OTPM)\)/i.exec(body);
   if (named) return named[1].toLowerCase();
   if (/PerMinute/.test(body)) return /Token/.test(body) ? 'tpm' : 'rpm';
   if (/PerDay/.test(body)) return /Token/.test(body) ? 'tpd' : 'rpd';

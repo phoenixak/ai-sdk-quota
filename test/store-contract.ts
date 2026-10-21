@@ -95,6 +95,28 @@ export function describeStoreContract(
       expect(u.tpd?.used).toBe(150);
     });
 
+    it('tracks input and output token windows separately', async () => {
+      const store = await makeStore();
+      const limits = { tpm: 8_000, itpm: 1_000, otpm: 100 };
+      const c = { key: 'm:a', limits, requests: 1, tokens: 130, inputTokens: 50, outputTokens: 80 };
+      const r = await reserveOk(store, [c]);
+      expect(await store.usage('m:a', limits, T0)).toMatchObject({ tpm: { used: 130 }, itpm: { used: 50 }, otpm: { used: 80 } });
+      // A second call would push output tokens past 100.
+      const blocked = await store.reserve([c], { now: T0, ttlMs: TTL });
+      expect(blocked.ok).toBe(false);
+      if (!blocked.ok) expect(blocked.blocked).toEqual({ key: 'm:a', dim: 'otpm' });
+      await store.commit(r, { total: 70, input: 50, output: 20 }, T0 + 10);
+      expect(await store.usage('m:a', limits, T0 + 10)).toMatchObject({ tpm: { used: 70 }, itpm: { used: 50 }, otpm: { used: 20 } });
+      // A plain total keeps the input/output estimates.
+      const r2 = await reserveOk(store, [c], T0 + 20);
+      await store.commit(r2, 100, T0 + 30);
+      expect(await store.usage('m:a', limits, T0 + 30)).toMatchObject({ tpm: { used: 170 }, otpm: { used: 100 } });
+      // Late commits record the real split too.
+      const late = (await store.reserve([{ ...c, key: 'm:b' }], { now: T0, ttlMs: 1_000 })) as { ok: true; reservation: Reservation };
+      await store.commit(late.reservation, { total: 60, output: 10 }, T0 + 5_000);
+      expect(await store.usage('m:b', limits, T0 + 5_000)).toMatchObject({ tpm: { used: 60 }, itpm: { used: 50 }, otpm: { used: 10 } });
+    });
+
     it('commit without usage keeps the estimate', async () => {
       const store = await makeStore();
       const limits = { tpm: 1_000 };

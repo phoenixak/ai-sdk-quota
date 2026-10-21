@@ -12,6 +12,10 @@ describe('limits registry', () => {
     expect(resolveLimits('nope:free', 'x')).toBeUndefined();
   });
 
+  it('carries the observed Groq OTPM limit', () => {
+    expect(resolveLimits('groq:free', 'qwen/qwen3.8-27b')?.limits.otpm).toBe(1000);
+  });
+
   it('resolves OpenRouter free models with the shared daily group', () => {
     expect(resolveLimits('openrouter:free', 'qwen/qwen3.8-27b:free')).toEqual({
       limits: { rpm: 20 },

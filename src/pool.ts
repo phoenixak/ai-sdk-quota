@@ -179,11 +179,17 @@ export function createQuotaPool(options: QuotaPoolOptions): QuotaPool {
   }
   const groupIds = [...new Set(members.flatMap((m) => m.groups.map((g) => g.key)))];
 
-  function charges(m: ResolvedMember, limits: Limits, tokens: number, budgetKey: string | undefined): Charge[] {
-    const list: Charge[] = [{ key: m.key, limits, requests: 1, tokens }];
-    for (const g of m.groups) list.push({ key: g.key, limits: g.limits, requests: 1, tokens });
+  function charges(
+    m: ResolvedMember,
+    limits: Limits,
+    est: { input: number; output: number },
+    budgetKey: string | undefined,
+  ): Charge[] {
+    const amounts = { requests: 1, tokens: est.input + est.output, inputTokens: est.input, outputTokens: est.output };
+    const list: Charge[] = [{ key: m.key, limits, ...amounts }];
+    for (const g of m.groups) list.push({ key: g.key, limits: g.limits, ...amounts });
     if (budgetKey !== undefined && options.budgets?.perKey) {
-      list.push({ key: `b:${budgetKey}`, limits: options.budgets.perKey, requests: 1, tokens });
+      list.push({ key: `b:${budgetKey}`, limits: options.budgets.perKey, ...amounts });
     }
     return list;
   }
@@ -208,7 +214,7 @@ export function createQuotaPool(options: QuotaPoolOptions): QuotaPool {
     const actual = totalTokens(usage);
     const output = usage?.outputTokens.total;
     if (output !== undefined) outputs.observe(m.member.id, output);
-    await store.commit(reservation, actual, clock.now());
+    await store.commit(reservation, { total: actual, input: usage?.inputTokens.total, output }, clock.now());
     emit({ type: 'reconcile', memberId: m.member.id, estimatedTokens: estimated, actualTokens: actual });
   }
 
@@ -272,9 +278,10 @@ export function createQuotaPool(options: QuotaPoolOptions): QuotaPool {
     for (const [attempt, m] of ordered.entries()) {
       const prompt = strip ? stripForeignProviderData(callOptions.prompt, m.member.model.provider) : callOptions.prompt;
       const options = { ...callOptions, prompt };
-      const estimated = estimateInput(options) + outputs.expected(m.member.id, callOptions.maxOutputTokens);
+      const est = { input: estimateInput(options), output: outputs.expected(m.member.id, callOptions.maxOutputTokens) };
+      const estimated = est.input + est.output;
       const limits = effectiveLimits(m, adaptiveFactors);
-      const reserved = await store.reserve(charges(m, limits, estimated, poolOptions.budgetKey), { now: clock.now(), ttlMs });
+      const reserved = await store.reserve(charges(m, limits, est, poolOptions.budgetKey), { now: clock.now(), ttlMs });
       if (!reserved.ok) {
         const reason = reserved.retryAfterMs === Infinity ? 'never-fits' : 'quota';
         const retry = reserved.retryAfterMs === Infinity ? {} : { retryAfterMs: reserved.retryAfterMs };
@@ -461,7 +468,7 @@ function raceAbort<T>(promise: PromiseLike<T>, signal: AbortSignal): Promise<T> 
 function withMargin(limits: Limits, margin: number): Limits {
   if (margin === 1) return limits;
   const out: Limits = { ...limits };
-  for (const dim of ['rps', 'rpm', 'rpd', 'tpm', 'tpd'] as const) {
+  for (const dim of DIMENSIONS) {
     const v = limits[dim];
     if (v !== undefined) out[dim] = Math.max(1, Math.floor(v * margin));
   }

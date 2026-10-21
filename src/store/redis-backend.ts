@@ -131,7 +131,7 @@ end
 
 if op == 'commit' then
   sweep()
-  local id, hasActual, actual, n = ARGV[4], ARGV[5] == '1', tonumber(ARGV[6]), tonumber(ARGV[7])
+  local id, n = ARGV[4], tonumber(ARGV[5])
   local rk = p .. 'r:' .. id
   local live = redis.call('EXISTS', rk) == 1
   if live then
@@ -139,13 +139,14 @@ if op == 'commit' then
     redis.call('ZREM', rx, id)
   end
   for i = 0, n - 1 do
-    local b = 8 + i * 6
-    local series, bucket, amount, isToken, nowBucket, keep = ARGV[b], ARGV[b + 1], tonumber(ARGV[b + 2]), ARGV[b + 3] == '1', ARGV[b + 4], ARGV[b + 5]
+    -- Per placement: series, bucket, reserved amount, real amount (-1 = keep the estimate), current bucket, keep ms.
+    local b = 6 + i * 6
+    local series, bucket, amount, actual, nowBucket, keep = ARGV[b], ARGV[b + 1], tonumber(ARGV[b + 2]), tonumber(ARGV[b + 3]), ARGV[b + 4], ARGV[b + 5]
     if live then
-      if hasActual and isToken then adjust(series, bucket, actual - amount) end
+      if actual >= 0 then adjust(series, bucket, actual - amount) end
     else
       local amt = amount
-      if hasActual and isToken then amt = actual end
+      if actual >= 0 then amt = actual end
       local sk = p .. 's:' .. series
       redis.call('HINCRBY', sk, nowBucket, string.format('%d', amt))
       redis.call('PEXPIRE', sk, keep)
@@ -284,16 +285,16 @@ export function redisBackend(run: RunScript, prefix: string): StoreBackend {
       return Number(reply[0]) === 1 ? { ok: true } : { ok: false, wait: Number(reply[1]), index: Number(reply[2]) };
     },
 
-    async commit({ id, actual, placements, now }) {
+    async commit({ id, placements, now }) {
       const flat = placements.flatMap((p: CommitPlacement) => [
         p.series,
         int(p.bucket),
         int(p.amount),
-        p.isToken ? '1' : '0',
+        int(p.actual),
         int(p.nowBucket),
         int(p.keepMs),
       ]);
-      await call('commit', now, [id, actual === undefined ? '0' : '1', int(actual ?? 0), String(placements.length), ...flat]);
+      await call('commit', now, [id, String(placements.length), ...flat]);
     },
 
     async release({ id, now }) {

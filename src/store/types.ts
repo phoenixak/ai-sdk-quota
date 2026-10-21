@@ -7,9 +7,16 @@ export interface Charge {
   limits: Limits;
   /** Requests this call counts against rps/rpm/rpd (normally 1). */
   requests: number;
-  /** Tokens this call is expected to use, counted against tpm/tpd. */
+  /** Tokens this call is expected to use in total, counted against tpm/tpd. */
   tokens: number;
+  /** Expected prompt tokens, counted against itpm. Defaults to `tokens`. */
+  inputTokens?: number;
+  /** Expected completion tokens, counted against otpm. Defaults to `tokens`. */
+  outputTokens?: number;
 }
+
+/** Real usage after a call; any count may be unknown. A plain number means the total. */
+export type ActualTokens = number | { total?: number | undefined; input?: number | undefined; output?: number | undefined };
 
 /** Where a reservation put each amount, so commit and release can adjust the same buckets. */
 export interface Placement {
@@ -52,10 +59,11 @@ export interface QuotaStore {
    */
   reserve(charges: Charge[], options: { now: number; ttlMs: number }): Promise<ReserveResult>;
   /**
-   * Replaces the reserved token estimate with `actualTokens` (keeps the estimate when
-   * undefined). A reservation that already expired is recorded as fresh usage.
+   * Replaces each token window's estimate with the matching real count (total for
+   * tpm/tpd, input for itpm, output for otpm); unknown counts keep the estimate.
+   * A reservation that already expired is recorded as fresh usage.
    */
-  commit(reservation: Reservation, actualTokens: number | undefined, now: number): Promise<void>;
+  commit(reservation: Reservation, actualTokens: ActualTokens | undefined, now: number): Promise<void>;
   /** Gives the reserved capacity back (the call never reached the provider, or was rejected). */
   release(reservation: Reservation, now: number): Promise<void>;
   /** Raises our counters to what the provider reports. Never lowers them. */
@@ -70,3 +78,4 @@ export interface QuotaStore {
   /** Current factors below 1 for these keys, recovered to `now`. */
   getAdapted(keys: string[], now: number, recoverMs: number): Promise<Record<string, number>>;
 }
+

@@ -4,12 +4,12 @@
       "source": "https://console.groq.com/docs/rate-limits",
       "verifiedAt": "2026-10-19",
       "verified": true,
-      "note": "Free plan, per organization. Cached tokens don't count. One free account sustained only ~20 RPM on openai/gpt-oss-20b on 2026-10-19 (adaptive limits handle this).",
+      "note": "Free plan, per organization. Cached tokens don't count. One free account sustained only ~20 RPM on openai/gpt-oss-20b on 2026-10-19 (adaptive limits handle this). Groq also applies input/output tokens-per-minute limits (ITPM/OTPM) to 'some organizations' without publishing values; the qwen otpm below was observed on one free account on 2026-10-21 (429: 'output tokens per minute (OTPM): Limit 1000').",
       "models": {
         "openai/gpt-oss-120b": { "rpm": 30, "rpd": 1000, "tpm": 8000, "tpd": 200000 },
         "openai/gpt-oss-20b": { "rpm": 30, "rpd": 1000, "tpm": 8000, "tpd": 200000 },
         "openai/gpt-oss-safeguard-20b": { "rpm": 3, "rpd": 1000, "tpm": 2000, "tpd": 200000 },
-        "qwen/qwen3.8-27b": { "rpm": 30, "rpd": 1000, "tpm": 8000, "tpd": 200000 },
+        "qwen/qwen3.8-27b": { "rpm": 30, "rpd": 1000, "tpm": 8000, "tpd": 200000, "otpm": 1000 },
         "meta-llama/llama-prompt-guard-2-22m": { "rpm": 30, "rpd": 14400, "tpm": 15000, "tpd": 500000 },
         "meta-llama/llama-prompt-guard-2-86m": { "rpm": 30, "rpd": 14400, "tpm": 15000, "tpd": 500000 }
       }

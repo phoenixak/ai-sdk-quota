@@ -59,7 +59,7 @@ function withRetryAfter(reading: HeaderReading, input: HeaderInput, now: number)
   return retryAfterMs === undefined ? reading : { ...reading, retryAfterMs };
 }
 
-const NAMED_WINDOW = /\((RPS|RPM|RPD|TPM|TPD)\)/gi;
+const NAMED_WINDOW = /\((RPS|RPM|RPD|TPM|TPD|ITPM|OTPM)\)/gi;
 
 /**
  * Windows named in an OpenAI-style 429 message, e.g. Groq's "Rate limit reached for

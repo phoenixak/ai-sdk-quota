@@ -263,6 +263,29 @@ describe('createQuotaPool: generate', () => {
     await expect(two.model().doGenerate({ prompt: userPrompt('x') })).rejects.toBeInstanceOf(PoolExhaustedError);
   });
 
+  it('reconciles input and output tokens separately and adapts to OTPM 429s', async () => {
+    const s = setup();
+    const otpm = 'Rate limit reached on output tokens per minute (OTPM): Limit 1000, Used 990, Requested 90. Please try again in 1.2s.';
+    let fail = true;
+    const a = mock('groq.chat', 'qwen/qwen3.8-27b', {
+      doGenerate: async () => {
+        if (fail) {
+          fail = false;
+          throw apiError(429, { body: otpm });
+        }
+        return generated('a', usage(30, 12));
+      },
+    });
+    const pool = createQuotaPool({ models: [{ id: 'a', model: a, limits: 'groq:free' }], ...s });
+    await expect(pool.model().doGenerate({ prompt: userPrompt('x') })).rejects.toBeInstanceOf(PoolExhaustedError);
+    expect(s.events.filter((e) => e.type === 'adapt')).toEqual([{ type: 'adapt', memberId: 'a', dim: 'otpm', factor: 0.75 }]);
+    s.clock.advance(70_000);
+    await pool.model().doGenerate({ prompt: userPrompt('x') });
+    const usageNow = (await pool.snapshot()).members[0]!.usage;
+    expect(usageNow.otpm?.used).toBe(12);
+    expect(usageNow.tpm?.used).toBe(42);
+  });
+
   it('ignores a named window the member has no limit for', async () => {
     const s = setup();
     const a = mock('groq.chat', 'x', {

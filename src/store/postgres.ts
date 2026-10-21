@@ -186,23 +186,22 @@ begin
     return jsonb_build_object('ok', true);
 
   elsif v_op = 'commit' then
-    v_actual := (p->>'actual')::bigint;
+    -- Each placement carries its real amount ('actual', -1 = keep the estimate).
     delete from ${s}.quota_reservations where id = p->>'id' returning placements into pl;
     if pl is not null then
-      if v_actual is not null then
-        for o in select value from jsonb_array_elements(p->'placements') loop
-          if (o->>'isToken')::boolean then
-            update ${s}.quota_buckets set amount = greatest(0, amount + v_actual - (o->>'amount')::bigint)
-              where series = o->>'series' and bucket = (o->>'bucket')::bigint;
-          end if;
-        end loop;
-      end if;
+      for o in select value from jsonb_array_elements(p->'placements') loop
+        v_actual := (o->>'actual')::bigint;
+        if v_actual >= 0 then
+          update ${s}.quota_buckets set amount = greatest(0, amount + v_actual - (o->>'amount')::bigint)
+            where series = o->>'series' and bucket = (o->>'bucket')::bigint;
+        end if;
+      end loop;
     else
       -- Expired before commit: the call still happened, so record it now.
       for o in select value from jsonb_array_elements(p->'placements') loop
         insert into ${s}.quota_buckets (series, bucket, amount, expires_at)
           values (o->>'series', (o->>'nowBucket')::bigint,
-                  case when (o->>'isToken')::boolean and v_actual is not null then v_actual else (o->>'amount')::bigint end,
+                  case when (o->>'actual')::bigint >= 0 then (o->>'actual')::bigint else (o->>'amount')::bigint end,
                   v_now + (o->>'keepMs')::bigint)
           on conflict (series, bucket) do update
             set amount = ${s}.quota_buckets.amount + excluded.amount,
@@ -337,8 +336,8 @@ export function postgresStore(db: PgQueryable, options: PostgresStoreOptions = {
       };
       return r.ok ? { ok: true } : { ok: false, wait: Number(r.wait), index: Number(r.index) };
     },
-    async commit({ id, actual, placements, now }) {
-      await op({ op: 'commit', now, id: ns(id), actual: actual ?? null, placements: placements.map((p) => ({ ...p, series: ns(p.series) })) });
+    async commit({ id, placements, now }) {
+      await op({ op: 'commit', now, id: ns(id), placements: placements.map((p) => ({ ...p, series: ns(p.series) })) });
     },
     async release({ id, now }) {
       await op({ op: 'release', now, id: ns(id) });
