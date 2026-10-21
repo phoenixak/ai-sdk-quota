@@ -47,7 +47,22 @@ Limits for known free tiers live in `ai-sdk-quota/limits`, each entry with its s
 
 `bench/soak.mjs` compares this pool with [`ai-fallback`](https://github.com/remorses/ai-fallback) on real free tiers (Groq, Gemini, OpenRouter). To keep it fair, the two take turns in blocks (A B B A A B B A …) inside the same time window, with the same models and the same seeded request mix, so both face the same quota state. It counts the 429s providers actually returned at the HTTP layer, records which limit each one names, and reports per-block ranges. The raw results (account ids redacted) are committed next to the table so anyone can check them.
 
-Results: coming with 0.1.0. Run it with your own keys:
+**Run of 2026-10-21** (commit `6682de8`; Groq `gpt-oss-20b` + `qwen3.8-27b`, Gemini `3.5-flash-lite`, OpenRouter `gemma-4-26b:free`; 400 requests per side in 10 alternating blocks of 40, 40 requests/min offered, seed 42; raw data: [`bench/results/2026-10-21-interleaved.json`](bench/results/2026-10-21-interleaved.json)):
+
+| | ai-sdk-quota (`priority`) | ai-fallback |
+|---|---|---|
+| Answered | 98.8% (395/400) | 100% (400/400) |
+| 429s received per request (per-block range) | **0.077** (0.000–0.150) | 0.100 (0.050–0.150) |
+| …per-minute request limits (RPM) | **9** | 22 |
+| …Groq output tokens per minute (OTPM) | 21 | 12 |
+| …busy upstream (OpenRouter) | 1 | 6 |
+| Refused locally (no provider call) | 5 | 0 |
+| Latency p50 / p95 | 373 / **855** ms | 464 / 2,860 ms |
+| Cost | $0 | $0 |
+
+What it shows, honestly: the pool hit far fewer request-rate 429s and kept p95 latency about 3× lower, but the per-block ranges overlap, so the total 429 difference is modest. Its 5 refusals came in one block where every member was at its limit, partly because the registry's Gemini default (15/min) is more cautious than this account needed. Most of its remaining 429s were Groq's **OTPM** limit (1,000 output tokens a minute on `qwen3.8-27b` for this account), which Groq documents as applying to "some organizations" without listing values, and which this version didn't model yet.
+
+Run it with your own keys:
 
 ```sh
 npm run build
