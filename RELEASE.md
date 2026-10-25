@@ -10,7 +10,8 @@ Checklist for `0.1.0`. Later releases repeat only the "Every release" part.
 - [ ] **Sanitize review, pass 2:** `sh scripts/check-private-terms.sh <your local terms file>` finds nothing, and the `leaks` workflow (gitleaks over the full history) is green.
 - [ ] **Make the repo public:** GitHub → Settings → General → Danger Zone → Change visibility. npm only shows provenance for public repos.
 - [ ] Turn on **secret scanning** and **push protection**: Settings → Code security.
-- [x] **Publishing auth:** trusted publishing, no tokens. For a package that doesn't exist yet, `npm trust github ai-sdk-quota --file release.yml --repo phoenixak/ai-sdk-quota --allow-publish --auth-type=web` reserves the name with a `0.0.0-stage` placeholder and attaches the trust, so even the first release publishes from Actions with provenance.
+- [x] **Publishing auth:** trusted publishing, no tokens. `npm trust github ai-sdk-quota --file release.yml --repo phoenixak/ai-sdk-quota --allow-publish --auth-type=web` (run by the maintainer; 2FA approves in the browser). For a package that doesn't exist yet, it reserves the name with a `0.0.0-stage` placeholder and attaches the trust.
+- [x] **0.1.0 was published from the maintainer's PC** (`npm publish --provenance=false --auth-type=web`), so it has no provenance badge. A new package's first version is held in npm's automated review ("Validating") for a while; during that time the version counts as taken, so the Actions publish of the same version fails with `409 ... previously staged version`. Harmless. Every later version publishes from Actions with provenance.
 - [ ] After the first publish, in the package settings on npmjs.com: Publishing access → "Require two-factor authentication and disallow tokens". Trusted publishing keeps working.
 
 ## Every release

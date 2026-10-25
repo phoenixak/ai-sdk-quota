@@ -2,6 +2,10 @@
 
 A quota-aware model pool for the [Vercel AI SDK](https://ai-sdk.dev). Give it several models (free tiers, paid keys, local), and it routes each call to one that **still has headroom**, before you hit a 429.
 
+```sh
+npm i ai-sdk-quota
+```
+
 ```ts
 import { streamText } from 'ai';
 import { createQuotaPool } from 'ai-sdk-quota';
