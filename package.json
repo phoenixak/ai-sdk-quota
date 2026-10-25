@@ -1,6 +1,6 @@
 {
   "name": "ai-sdk-quota",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Quota-aware model pool for the Vercel AI SDK: route each call to a model that still has headroom, before you hit a 429.",
   "license": "MIT",
   "author": "Ahmed Khaled (https://github.com/phoenixak)",
