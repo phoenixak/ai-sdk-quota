@@ -54,6 +54,13 @@ jobs:
       - run: npm run build
       - run: npm run lint:pkg
       - run: npm run check:size
-      - run: npm publish --provenance --access public
+      - name: Skip if this version is already on npm
+        id: published
+        run: |
+          if npm view "ai-sdk-quota@$(node -p "require('./package.json').version")" version >/dev/null 2>&1; then
+            echo "already=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.published.outputs.already != 'true'
+        run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
