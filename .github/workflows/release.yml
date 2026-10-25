@@ -1,8 +1,8 @@
 name: release
 # Publishes to npm when a version tag (v0.1.0, ...) is pushed. Runs every gate first.
-# Auth: npm trusted publishing (OIDC, no token) once configured on npmjs.com; until
-# then, the NPM_TOKEN secret (a short-lived granular token) is used for the first publish.
-# Provenance is attached automatically; npm only shows it for public repos.
+# Auth: npm trusted publishing (OIDC): no token is stored anywhere. Configured with
+# `npm trust github ai-sdk-quota --file release.yml --repo phoenixak/ai-sdk-quota`.
+# Provenance is attached automatically (public repo).
 on:
   push:
     tags: ['v*']
@@ -62,5 +62,3 @@ jobs:
           fi
       - if: steps.published.outputs.already != 'true'
         run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

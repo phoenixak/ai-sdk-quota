@@ -10,9 +10,7 @@ Checklist for `0.1.0`. Later releases repeat only the "Every release" part.
 - [ ] **Sanitize review, pass 2:** `sh scripts/check-private-terms.sh <your local terms file>` finds nothing, and the `leaks` workflow (gitleaks over the full history) is green.
 - [ ] **Make the repo public:** GitHub → Settings → General → Danger Zone → Change visibility. npm only shows provenance for public repos.
 - [ ] Turn on **secret scanning** and **push protection**: Settings → Code security.
-- [ ] **First-publish auth**, pick one:
-  - If npmjs.com lets you add a trusted publisher before the package exists: add one for repo `phoenixak/ai-sdk-quota`, workflow `release.yml`. No token needed.
-  - Otherwise: create a **granular access token** (npmjs.com → Access Tokens → Generate → Granular; packages: read and write; expiry: 7 days) and save it as the repo secret `NPM_TOKEN`. After the first publish, add the trusted publisher in the package settings, delete the `NPM_TOKEN` secret and revoke the token.
+- [x] **Publishing auth:** trusted publishing, no tokens. For a package that doesn't exist yet, `npm trust github ai-sdk-quota --file release.yml --repo phoenixak/ai-sdk-quota --allow-publish --auth-type=web` reserves the name with a `0.0.0-stage` placeholder and attaches the trust, so even the first release publishes from Actions with provenance.
 - [ ] After the first publish, in the package settings on npmjs.com: Publishing access → "Require two-factor authentication and disallow tokens". Trusted publishing keeps working.
 
 ## Every release
